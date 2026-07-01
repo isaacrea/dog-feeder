@@ -1,0 +1,80 @@
+#pragma once
+#include <Arduino.h>
+
+// Central configuration. All tunable values (pins, user names, thresholds,
+// timeouts) are defined here; no other file hardcodes them.
+
+// ---------- Identity ----------
+#define DEVICE_ID "feeder1"
+
+// ---------- Wi-Fi ----------
+#define WIFI_SSID "YOUR_WIFI_SSID"
+#define WIFI_PASS "YOUR_WIFI_PASS"
+
+// ---------- Household + selector switch ----------
+// The rotary control is a 5-throw selector switch, not an encoder. Each throw
+// is wired to its own pin and reads active-LOW through an internal pull-up. The
+// knob position selects the person directly; there is nothing to decode or
+// scroll. SELECTOR_PINS[i] corresponds to USERS[i].
+static const uint8_t     SELECTOR_PINS[] = {  "YOUR_PINS"   };
+static const char* const USERS[]         = { "YOUR_USERS" };
+static const uint8_t NUM_USERS = sizeof(SELECTOR_PINS) / sizeof(SELECTOR_PINS[0]);
+
+// ---------- Other pins ----------
+static const uint8_t PIN_BUTTON = 4;    // confirm and deep-sleep wake; GPIO4 is RTC-capable (ext0), active-LOW
+#define VBAT_PIN A13                     // Feather V2 battery sense (raw mV, scaled x2)
+// The OLED is on the I2C bus (SDA/SCL); the display driver owns its address and pins.
+
+// ---------- Meals ----------
+// The dog is fed twice a day: the first feeding of the day is breakfast, the
+// second is dinner. The meal is assigned by order (see feeding.cpp), not by a
+// clock window, so feeding early or late still labels it correctly.
+//
+// Recency guard: a feeding less than this long after the previous one is treated
+// as a likely accidental double-feed (for example, a second person feeding the
+// dog again) and shown a "fed N ago, hold to override" warning, which ordinal
+// labeling alone cannot catch. Keep this comfortably below the normal
+// breakfast-to-dinner gap so real meals do not trip it.
+static const uint32_t MIN_REFEED_GAP_SEC = 3UL * 60 * 60;   // 3 hours
+
+// ---------- Time ----------
+// POSIX TZ string for US Central with DST rules included. Local-day boundaries
+// and the DST switch are then handled by the standard library, while the stored
+// timestamp stays UTC because the payload is formatted with gmtime_r (see
+// store.cpp). Applied via configTzTime(TZ_STRING, NTP_SERVER1, NTP_SERVER2).
+#define TZ_STRING   "CST6CDT,M3.2.0,M11.1.0"
+#define NTP_SERVER1 "pool.ntp.org"
+#define NTP_SERVER2 "time.nist.gov"
+
+static const uint32_t NTP_STALE_MS       = 24UL * 60 * 60 * 1000;  // SYNCED to DRIFTING after 24 h
+static const uint32_t NTP_RESYNC_MS      = 10UL * 60 * 1000;       // no-RTC fallback: re-pull NTP when a wake is >10 min stale
+static const uint32_t TIME_FLOOR_SAVE_MS = 15UL * 60 * 1000;       // persist the clock floor every 15 min
+
+// ---------- DS3231 hardware RTC (keeps accurate time across deep sleep) ----------
+static const uint8_t  DS3231_ADDR     = 0x68;                      // I2C address; shares the bus with the OLED (0x3D)
+static const uint32_t MIN_VALID_EPOCH = 1704067200UL;              // 2024-01-01 UTC: reject a never-set or power-lost RTC
+static const uint32_t NTP_TRIM_MS     = 24UL * 60 * 60 * 1000;     // with the RTC present, re-pull NTP only to trim it daily
+
+// ---------- Degraded mode (clock UNKNOWN) ----------
+// With no trustworthy wall clock the device cannot reason about "today", so it
+// never blocks a feeding; the wake screen surfaces the last recorded feeding
+// instead (see feeding::check).
+
+// ---------- Cloud sync ----------
+#define API_URL "YOUR_API_URL"
+#define API_KEY "YOUR_API_KEY"   // sent as the x-api-key header once API Gateway requires it
+static const uint32_t SYNC_BACKOFF_START_MS = 30UL * 1000;     // first retry after 30 s
+static const uint32_t SYNC_BACKOFF_MAX_MS   = 5UL * 60 * 1000; // cap at 5 min
+
+// ---------- UI timing ----------
+static const uint32_t OVERRIDE_HOLD_MS  = 2000;   // hold duration to override "already fed"
+static const uint32_t SUCCESS_SCREEN_MS = 5000;   // success screen duration before returning to idle
+static const uint32_t WARNING_TIMEOUT_MS = 7000;  // "already fed" screen auto-returns after this
+static const uint32_t CONFIRM_TIMEOUT_MS = 10000; // abandon confirm, return to idle
+
+// ---------- Deep sleep (wake/act/sleep) ----------
+static const uint32_t AWAKE_TIMEOUT_MS        = 90000; // stay awake this long after a wake, then sleep (~90 s)
+static const uint32_t WIFI_CONNECT_TIMEOUT_MS = 8000;  // maximum wait for Wi-Fi during a sync burst
+// SYNC_BACKOFF_* above are vestigial under deep sleep: a failed sync simply
+// retries on the next wake, so the effective retry interval is the time until
+// the next feeding rather than a timer-driven backoff.
