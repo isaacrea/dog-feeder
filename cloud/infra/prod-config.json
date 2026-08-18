@@ -1,0 +1,10 @@
+{
+  "Parameters": {
+    "StageName": "prod",
+    "ThrottleRateLimit": "5",
+    "ThrottleBurstLimit": "10",
+    "QuotaLimit": "500",
+    "BatteryWarnVolts": "3.60",
+    "BatteryCritVolts": "3.45"
+  }
+}

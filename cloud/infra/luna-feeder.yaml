@@ -1,0 +1,520 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Luna Feeder - portable revision - deployable to any region or account unchanged
+
+Parameters:
+
+  StageName:
+    Type: String
+    Default: prod
+    AllowedPattern: '[a-zA-Z0-9_-]+'
+    Description: API Gateway stage name. Appears as a path segment in the invoke URL.
+
+  ThrottleRateLimit:
+    Type: Number
+    Default: 5
+    Description: Steady-state request rate ceiling, requests per second.
+
+  ThrottleBurstLimit:
+    Type: Number
+    Default: 10
+    Description: Burst capacity, requests. Must be >= ThrottleRateLimit.
+
+  QuotaLimit:
+    Type: Number
+    Default: 500
+    Description: Maximum requests per quota period.
+
+  NotificationEmail:
+    Type: String
+    AllowedPattern: '^[^\s@]+@[^\s@]+\.[^\s@]+$'
+    ConstraintDescription: Must be a valid email address.
+    Description: >-
+      Address that receives feeding notifications. No default on purpose -
+      must be supplied at deploy time. Requires a one-time confirmation click
+      after the subscription is created.
+
+  # Tunable without code changes: after calibrating the device's ADC against a
+  # multimeter, adjust these in the update wizard - no reflash, no code edit.
+  # CloudFormation cannot enforce Crit < Warn across parameters (that needs the
+  # rarely-used top-level Rules section), so keep them sane yourself.
+  BatteryWarnVolts:
+    Type: Number
+    Default: 3.60
+    MinValue: 3.0
+    MaxValue: 4.2
+    Description: >-
+      Leaving-the-plateau threshold. At or below this, emails note the battery
+      is low and worth charging soon.
+
+  BatteryCritVolts:
+    Type: Number
+    Default: 3.45
+    MinValue: 3.0
+    MaxValue: 4.2
+    Description: >-
+      Knee threshold. At or below this, emails flag the battery as critical.
+      Must be set below BatteryWarnVolts.
+
+Resources:
+
+  # ===========================================================================
+  # Data store.
+  # TableName stays explicit even though it limits this template to one stack
+  # per region: the name is entrenched - TableName is Update: Replacement, so
+  # removing it now would replace the table and destroy its data. Names on
+  # STATEFUL resources are decisions you live with; contrast with the roles
+  # below.
+  # ===========================================================================
+  FeedingLogsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: DogFeedingLogs_IAC
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      StreamSpecification:
+        StreamViewType: NEW_IMAGE
+
+  # ===========================================================================
+  # Ingest compute and identity.
+  # ===========================================================================
+  IngestFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/lambda/luna-feeder-ingest-iac
+      RetentionInDays: 14
+
+  # No RoleName, deliberately. IAM is a GLOBAL service: role names live in the
+  # account, not the region, so an explicit name here makes the template
+  # collide with itself when deployed to a second region. CloudFormation
+  # generates a unique name (<stack>-<logical id>-<random>); nothing references
+  # these roles by name - only by !GetAtt ...Arn. Side effect: the stack now
+  # needs only CAPABILITY_IAM rather than CAPABILITY_NAMED_IAM.
+  IngestFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      # Trust policy: WHO may assume this role.
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+
+      # Permissions policies: WHAT this role may do once assumed.
+      Policies:
+        - PolicyName: WriteFeedingLogs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # PutItem ONLY. ConditionExpression on a Put needs no read grant.
+              - Effect: Allow
+                Action: dynamodb:PutItem
+                Resource: !GetAtt FeedingLogsTable.Arn
+
+        - PolicyName: WriteOwnLogs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # Narrower than AWSLambdaBasicExecutionRole: no CreateLogGroup,
+              # and scoped to this function's group rather than /aws/lambda/*.
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/luna-feeder-ingest-iac:*'
+
+  # Inline ZipFile is always written to index.js and parsed as CommonJS.
+  # Canonical source is cloud/lambda/storeDogFeedingLog.mjs; this is a build
+  # artifact of it. Edit the .mjs, regenerate this, never the reverse.
+  IngestFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: IngestFunctionLogGroup
+    Properties:
+      FunctionName: luna-feeder-ingest-iac
+      Runtime: nodejs22.x
+      Handler: index.handler
+      Role: !GetAtt IngestFunctionRole.Arn
+      Timeout: 10
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref FeedingLogsTable
+      Code:
+        ZipFile: |
+          // storeDogFeedingLog - write Lambda for the Dog Feeding Tracker.
+          // CommonJS build of index.mjs.
+
+          const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
+          const { DynamoDBDocumentClient, PutCommand } = require('@aws-sdk/lib-dynamodb');
+
+          const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+          const TABLE = process.env.TABLE_NAME;
+
+          exports.handler = async (event) => {
+            try {
+              const body = typeof event.body === 'string' ? JSON.parse(event.body) : event.body;
+
+              if (!body || !body.person || !body.timestamp) {
+                return resp(400, { message: 'Missing required fields: person, timestamp.' });
+              }
+
+              const id = body.eventId
+                ? String(body.eventId)
+                : new Date().toISOString() + '_' + Math.random().toString(36).slice(2);
+
+              const receivedMs = Date.now();
+              const ageSec = Number.isFinite(body.ageSec) ? body.ageSec : null;
+              const timestamp = ageSec != null
+                ? new Date(receivedMs - ageSec * 1000).toISOString()
+                : body.timestamp;
+
+              const item = {
+                id,                                            // partition key (table is keyed on `id`)
+                person:          body.person,
+                timestamp,                                     // authoritative: server-anchored when possible
+                deviceTimestamp: body.timestamp,               // what the device's clock claimed (audit)
+                timeSource:      ageSec != null ? 'server-anchored' : 'device',
+                meal:            body.meal ?? null,            // "breakfast" | "dinner" | "extra"
+                override:        body.override ?? false,
+                timeConfidence:  body.timeConfidence ?? null,  // "synced" | "drifting" | "unknown"
+                batteryVoltage:  body.batteryVoltage ?? null,
+                receivedAt:      new Date(receivedMs).toISOString(),  // server clock, for auditing skew
+              };
+
+              await ddb.send(new PutCommand({
+                TableName: TABLE,
+                Item: item,
+                ConditionExpression: 'attribute_not_exists(id)', // first write wins
+              }));
+
+              return resp(200, { message: 'Stored.', id });
+            } catch (err) {
+              if (err.name === 'ConditionalCheckFailedException') {
+                return resp(200, { message: 'Already stored (idempotent no-op).' });
+              }
+              console.error('Error:', err);
+              return resp(500, { message: 'Error storing feeding log.', error: err.message });
+            }
+          };
+
+          const resp = (statusCode, obj) => ({
+            statusCode,
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(obj),
+          });
+
+  # ===========================================================================
+  # Edge. Note: notifier code changes do NOT require bumping the Deployment
+  # logical ID - that's only for API-surface changes. The integration points
+  # at the function ARN, which is stable across code updates.
+  # ===========================================================================
+  FeedingApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: luna-feeder-api-iac
+      Description: Ingest endpoint for the Luna Feeder device
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+
+  FeedingLogsResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref FeedingApi
+      ParentId: !GetAtt FeedingApi.RootResourceId
+      PathPart: feedingLogs
+
+  FeedingLogsPostMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref FeedingApi
+      ResourceId: !Ref FeedingLogsResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      ApiKeyRequired: true
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${IngestFunction.Arn}/invocations'
+
+  IngestFunctionInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt IngestFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${FeedingApi}/*/POST/feedingLogs'
+
+  FeedingApiDeployment20260805:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn: FeedingLogsPostMethod
+    Properties:
+      RestApiId: !Ref FeedingApi
+
+  FeedingApiStage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      RestApiId: !Ref FeedingApi
+      DeploymentId: !Ref FeedingApiDeployment20260805
+      StageName: !Ref StageName
+
+  FeedingApiKey:
+    Type: AWS::ApiGateway::ApiKey
+    Properties:
+      Name: luna-feeder-device-key-iac
+      Description: Device key for the Luna Feeder ESP32
+      Enabled: true
+
+  FeedingUsagePlan:
+    Type: AWS::ApiGateway::UsagePlan
+    Properties:
+      UsagePlanName: luna-feeder-usage-plan-iac
+      Description: Rate, burst, and quota ceiling for the feeder device
+      ApiStages:
+        - ApiId: !Ref FeedingApi
+          Stage: !Ref FeedingApiStage
+      Throttle:
+        RateLimit: !Ref ThrottleRateLimit
+        BurstLimit: !Ref ThrottleBurstLimit
+      Quota:
+        Limit: !Ref QuotaLimit
+        Period: DAY
+
+  FeedingUsagePlanKey:
+    Type: AWS::ApiGateway::UsagePlanKey
+    Properties:
+      KeyId: !Ref FeedingApiKey
+      KeyType: API_KEY
+      UsagePlanId: !Ref FeedingUsagePlan
+
+  # ===========================================================================
+  # Notification path.
+  # ===========================================================================
+
+  NotificationTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      # Note for the docs habit: !Ref on an SNS topic returns the ARN, not the
+      # name - opposite polarity from a DynamoDB table.
+      TopicName: luna-feeder-notifications-iac
+      DisplayName: Luna Feeder
+
+  # CREATE_COMPLETE here means SNS accepted the request, NOT that the address
+  # is confirmed. The subscription stays PendingConfirmation until the link in
+  # the confirmation email is clicked. Every region gets its own subscription
+  # and therefore its own confirmation email.
+  NotificationEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref NotificationTopic
+      Protocol: email
+      Endpoint: !Ref NotificationEmail
+
+  NotifierFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/lambda/luna-feeder-notifier-iac
+      RetentionInDays: 14
+
+  # No RoleName - same global-namespace reasoning as the ingest role above.
+  NotifierFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: ReadFeedingStream
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # The three read operations, scoped to the one stream that exists
+              # right now. StreamArn embeds a creation timestamp, so !GetAtt is
+              # the only possible source - it cannot be constructed by hand.
+              - Effect: Allow
+                Action:
+                  - dynamodb:DescribeStream
+                  - dynamodb:GetRecords
+                  - dynamodb:GetShardIterator
+                Resource: !GetAtt FeedingLogsTable.StreamArn
+              # ListStreams is a list-type action: it cannot be scoped to a
+              # single stream, but it CAN be scoped to this table's streams.
+              - Effect: Allow
+                Action: dynamodb:ListStreams
+                Resource: !Sub '${FeedingLogsTable.Arn}/stream/*'
+
+        - PolicyName: PublishNotifications
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # One action, one topic. !Ref = topic ARN.
+              - Effect: Allow
+                Action: sns:Publish
+                Resource: !Ref NotificationTopic
+
+        - PolicyName: WriteOwnLogs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/luna-feeder-notifier-iac:*'
+
+  NotifierFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: NotifierFunctionLogGroup
+    Properties:
+      FunctionName: luna-feeder-notifier-iac
+      Runtime: nodejs22.x
+      Handler: index.handler
+      Role: !GetAtt NotifierFunctionRole.Arn
+      Timeout: 10
+      Environment:
+        Variables:
+          TOPIC_ARN: !Ref NotificationTopic
+          DISPLAY_TIMEZONE: America/Chicago
+          BATTERY_WARN_VOLTS: !Ref BatteryWarnVolts
+          BATTERY_CRIT_VOLTS: !Ref BatteryCritVolts
+      Code:
+        ZipFile: |
+          // luna-feeder-notifier v2 - stream consumer for the Dog Feeding Tracker.
+          // CommonJS build (ZipFile constraint). Canonical .mjs lives in the repo.
+          // NOTE: this file must stay UTF-8 - it contains emoji in the Message
+          // strings. Emoji are legal in the SNS Message body, NEVER in Subject.
+
+          const { SNSClient, PublishCommand } = require('@aws-sdk/client-sns');
+          const { unmarshall } = require('@aws-sdk/util-dynamodb');
+
+          const sns = new SNSClient({});
+          const TOPIC_ARN = process.env.TOPIC_ARN;
+          const TZ = process.env.DISPLAY_TIMEZONE || 'America/Chicago';
+          const WARN_V = Number(process.env.BATTERY_WARN_VOLTS);
+          const CRIT_V = Number(process.env.BATTERY_CRIT_VOLTS);
+
+          // Data stays UTC in the table; presentation converts at the edge.
+          // IANA zone name (not a fixed offset) so DST is handled for free.
+          const centralTime = (iso) => {
+            const d = new Date(iso);
+            if (!iso || Number.isNaN(d.getTime())) return iso || 'an unknown time';
+            return d.toLocaleString('en-US', {
+              timeZone: TZ,
+              weekday: 'short', month: 'short', day: 'numeric',
+              hour: 'numeric', minute: '2-digit', hour12: true,
+              timeZoneName: 'short',
+            });
+          };
+
+          // 1S Li-ion: 4.2 full -> long flat plateau ~3.9-3.6 -> knee ~3.5 ->
+          // fast dropoff. Voltage is a poor fuel gauge mid-plateau (millivolts
+          // per percent) but a good EDGE detector, so we alert on edges rather
+          // than estimate percent.
+          const batteryStatus = (v) => {
+            if (v == null || !Number.isFinite(v)) return { line: null, subjectTag: '' };
+            const s = v.toFixed(2) + ' V';
+            if (v <= CRIT_V) return {
+              line: '\u{1FAAB} Battery critical: ' + s + ' - charge today. Below ~3.3 V a WiFi burst can brown out the board.',
+              subjectTag: ' [battery critical]',
+            };
+            if (v <= WARN_V) return {
+              line: '\u{1F50B} Battery low: ' + s + ' - worth charging in the next day or two.',
+              subjectTag: ' [battery low]',
+            };
+            if (v >= 4.15) return { line: 'Battery: ' + s + ' (full or on charger)', subjectTag: '' };
+            return { line: 'Battery: ' + s, subjectTag: '' };
+          };
+
+          exports.handler = async (event) => {
+            for (const record of event.Records ?? []) {
+              try {
+                // Only new feedings notify. MODIFY (console edits) and REMOVE
+                // (deletions) are invoked but skipped here.
+                if (record.eventName !== 'INSERT') continue;
+
+                // Stream records arrive in low-level DynamoDB JSON - the
+                // Document client's conveniences do not apply here.
+                const item = unmarshall(record.dynamodb.NewImage);
+
+                const name = item.person ?? 'Someone';
+                const meal = item.meal ?? 'a meal';
+                const when = centralTime(item.timestamp ?? item.receivedAt);
+                const batt = batteryStatus(item.batteryVoltage);
+
+                const lines = ['\u{1F415} Luna was fed ' + meal + ' by ' + name + ' at ' + when + '.'];
+                if (item.override) lines.push('\u26A0\uFE0F Recency override was used for this feeding.');
+                if (batt.line) lines.push(batt.line);
+
+                await sns.send(new PublishCommand({
+                  TopicArn: TOPIC_ARN,
+                  // Subject MUST be ASCII (<=100 chars, no line breaks). An
+                  // emoji here fails the publish with InvalidParameter, and
+                  // because this handler logs-and-continues, the symptom would
+                  // be "notifications silently stopped".
+                  Subject: 'Luna fed: ' + meal + ' by ' + name + batt.subjectTag,
+                  Message: lines.join('\n'),
+                }));
+              } catch (err) {
+                // Log-and-continue by design: throwing makes the event source
+                // mapping retry the batch until records expire (24h), so one
+                // bad record would block every notification behind it.
+                console.error('Notify failed for record', record.eventID, err);
+              }
+            }
+          };
+
+  # The poller configuration: which stream, which function, where to begin.
+  # Poll-based invocation - no AWS::Lambda::Permission in this path.
+  NotifierEventSourceMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !GetAtt FeedingLogsTable.StreamArn
+      FunctionName: !Ref NotifierFunction
+      # LATEST: begin at the stream's tip. TRIM_HORIZON would replay whatever
+      # the stream retains (up to 24h) - wrong for notifications.
+      StartingPosition: LATEST
+
+Outputs:
+
+  InvokeUrl:
+    Description: Full endpoint for the device. Update the firmware's secrets.h with this.
+    Value: !Sub 'https://${FeedingApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${StageName}/feedingLogs'
+
+  ApiKeyId:
+    Description: >-
+      API key ID, not the key value. Retrieve the value at
+      API Gateway -> API keys -> select this key -> Show.
+    Value: !Ref FeedingApiKey
+
+  RestApiId:
+    Description: REST API ID, the leading segment of the endpoint hostname
+    Value: !Ref FeedingApi
+
+  TableName:
+    Description: Name of the IaC-managed feeding log table
+    Value: !Ref FeedingLogsTable
+
+  TableArn:
+    Description: ARN of the IaC-managed feeding log table
+    Value: !GetAtt FeedingLogsTable.Arn
+
+  TableStreamArn:
+    Description: Stream ARN - note the creation-timestamp suffix
+    Value: !GetAtt FeedingLogsTable.StreamArn
+
+  IngestFunctionArn:
+    Description: ARN of the ingest Lambda
+    Value: !GetAtt IngestFunction.Arn
+
+  NotificationTopicArn:
+    Description: SNS topic ARN (also what !Ref returns for a topic)
+    Value: !Ref NotificationTopic
