@@ -2,7 +2,7 @@
 
 <img src="docs/device.png" alt="Assembled Luna Feeder prototype" width="480">
 
-Wall-mounted ESP32 tracker that logs who fed the dog, when, and which meal, and blocks accidental double-feeds. Records live on the device; an AWS backend provides remote history and email notifications. Built alongside AWS Solutions Architect Associate study.
+ESP32 tracker that logs who fed the dog, when, and which meal, and blocks accidental double-feeds. Records live on the device; an AWS backend provides remote history and email notifications. Built alongside AWS Solutions Architect Associate study.
 
 ## Hardware
 
