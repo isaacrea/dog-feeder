@@ -369,6 +369,7 @@ Resources:
         ZipFile: |
           // Notifier for the Luna Feeder: consumes the feeding table's
           // stream and publishes one message per new feeding.
+          // deployed via pipeline
 
           const { SNSClient, PublishCommand } = require('@aws-sdk/client-sns');
           const { unmarshall } = require('@aws-sdk/util-dynamodb');
