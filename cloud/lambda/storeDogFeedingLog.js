@@ -1,5 +1,8 @@
-// storeDogFeedingLog - write Lambda for the Dog Feeding Tracker.
-// CommonJS build of index.mjs.
+// Ingest for the Luna Feeder: validates the device payload and
+// writes one feeding record.
+//
+// Deployed inline via the CloudFormation template (cloud/infra/luna-feeder.yaml).
+// This file is the source of truth; the template's ZipFile block is a copy.
 
 const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
 const { DynamoDBDocumentClient, PutCommand } = require('@aws-sdk/lib-dynamodb');

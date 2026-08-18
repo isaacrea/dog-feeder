@@ -1,92 +1,104 @@
 # Luna Feeder
 
-<img src="docs/device.png" alt="The assembled Luna Feeder prototype sitting on counter. Later to be mounted on the dog bowl area." width="480">
+<img src="docs/device.png" alt="Assembled Luna Feeder prototype" width="480">
 
-> The assembled Luna Feeder prototype sitting on counter. Later to be mounted on the dog bowl area.
+Wall-mounted ESP32 tracker that logs who fed the dog, when, and which meal, and blocks accidental double-feeds. Records live on the device; an AWS backend provides remote history and email notifications. Built alongside AWS Solutions Architect Associate study.
 
-A small wall-mounted tracker that logs who fed the dog and when, so nobody feeds her twice. It runs on an ESP32 and keeps its records on the device itself. The AWS backend is just there so I can see the history.
+## Hardware
 
-## Why I built it
-
-There are five of us in the house, and the dog is very good at convincing each of us she hasn't eaten yet. The feeder helps with that. You pick your name, press the button, and it logs the feeding. If she's already been fed, it tells you before you do it again.
-
-I also wanted a real project to go with my AWS Solutions Architect studies, something with a backend I actually had to think through instead of a tutorial I copied.
-
-## What it runs on
-
-<p align="left">
-  <img src="docs/internals.png" alt="ESP32 Feather V2 wired to the DS3231 RTC and OLED" width="480">
-</p>
-
-> ESP32 Feather V2 wired to the DS3231 RTC and OLED
+<img src="docs/internals.png" alt="ESP32 Feather V2 wired to the DS3231 RTC and OLED" width="480">
 
 - Adafruit ESP32 Feather V2 (Arduino framework)
 - DS3231 real-time clock
-- Small OLED for status and the current time
-- On-device storage: LittleFS for the feeding log, NVS for config and counters
-- AWS: API Gateway → Lambda → DynamoDB, with CloudWatch for logs
+- OLED status display
+- Local storage: LittleFS (feeding log), NVS (config and counters)
 
+## Cloud stack
 
-## How it fits together
+- API Gateway (REST, API key + usage plan) → Lambda → DynamoDB
+- DynamoDB Streams → Lambda → SNS (email notifications)
+- CloudWatch Logs
+- Entire backend defined in one CloudFormation template, deployed by CodePipeline
+
+## Architecture
 
 ![Architecture: the ESP32 device with its inputs and local store, and the AWS side behind it](docs/architecture.png)
 
-> Architecture: the ESP32 device with its inputs and local store, and the AWS side behind it
+The device is the source of truth; the cloud is a visibility layer. All feeding logic runs locally. If WiFi or AWS is unavailable, the feeder works unchanged and syncs pending records when connectivity returns.
 
-The device handles everything that matters on its own. You interact with it through the selector and button, it stores the feeding locally, and it shows status on the OLED. When it can reach the internet it sends a copy up to AWS. When it can't, it holds onto the feeding and sends it later.
+The notification path is driven off the DynamoDB stream and is independent of ingest — a notification failure cannot affect recording.
 
-The device is the source of truth, and the cloud is a bonus. If AWS is down, the WiFi drops, or the whole account disappears, the feeder works exactly the same — you just don't get the remote view until it reconnects. I'd rather lose visibility than lose the ability to record a feeding. A missed cloud write is nothing; a missed feeding means the dog gets overfed.
+## Feeding logic
 
-## Deciding the meal (and blocking double-feeds)
-
-<p align="left">
-  <img src="docs/closeup.png" alt="Closeup of the device's screen" width="480">
-</p>
-
-> Closeup of the device's screen
+<img src="docs/closeup.png" alt="Device screen closeup" width="480">
 
 ![Feeding logic: button press runs through the double-feed and recency checks before logging](docs/feeding-logic.png)
 
-> Feeding logic: button press runs through the double-feed and recency checks before logging
+On button press:
 
-When you press the button, the device runs a couple of checks before it logs anything:
+1. Block if already fed twice today.
+2. Block if the last feeding was under three hours ago (overridable).
+3. Meal is determined by order, not clock time: first feeding is breakfast, second is dinner.
+4. Log locally, queue for sync, confirm on screen.
 
-1. Has she already been fed twice today? If so, block it.
-2. Was the last feeding less than three hours ago? If so, block it.
-3. Otherwise, work out which meal it is. I don't use clock times for that: the first feeding of the day is breakfast, the second is dinner. Just counting in order.
+The recency window is tuned toward false warnings rather than missed double-feeds.
 
-Then it logs the feeding, queues it for sync, and shows the confirmation on screen.
+## Sync
 
-The three-hour guard is set the way it is on purpose. A false warning is mildly annoying, you wait a bit or override it. A *missed* double-feed means the dog's been overfed. Those aren't the same size of mistake, so I tuned it to lean toward the annoying one.
+![Sync sequence: write locally first, enqueue, then POST or retry with backoff](docs/sync-sequence.png)
 
-## Getting it to the cloud
+Feedings are written locally first, then queued. The queue POSTs to AWS when reachable and retries with backoff when not. Each record carries a stable event ID and the cloud write is conditional on it, so retries cannot create duplicates.
 
-![Sync Sequence Diagram: write locally first, enqueue, then POST if the cloud is reachable or retry with backoff](docs/sync-sequence.png)
+## Notifications
 
-> Sync Sequence Diagram: write locally first, enqueue, then POST if the cloud is reachable or retry with backoff
+One email per feeding, triggered by the table's stream:
 
-Sync is intentionally simple and hard to break. Once a feeding is confirmed it's written locally first, then dropped into a queue. If the cloud is reachable it POSTs to AWS and moves on. If not, the entry stays in the queue and gets retried later with backoff. Nothing gets lost, because the local write already happened before any of this runs.
+```
+🐕 Luna was fed dinner by Isaac at Tue, Aug 18, 6:02 PM CDT.
+Battery: 3.82 V
+```
+
+- Timestamps are stored in UTC and rendered in Central Time at display (IANA zone, DST-safe).
+- Battery alerts at 3.60 V (low) and 3.45 V (critical, tagged in the subject line). Li-ion voltage is nearly flat mid-discharge, so alerts fire on the curve's edges instead of estimating a percentage. Both thresholds are stack parameters, tunable without code changes.
+
+## Infrastructure as code
+
+- Single CloudFormation template (`cloud/infra/`) defines the table, both Lambdas, IAM roles, API Gateway with key and usage plan, SNS topic and subscription, and stream wiring. Deploys to any region or account unchanged; deleting the stack removes everything it created.
+- CodePipeline (V2) deploys on merges to `main` that touch `cloud/infra/`, via a GitHub App connection. The pipeline uses a CloudFormation deploy role scoped to this stack's resources, and `main` is branch-protected. The console is read-only by convention; manual stack changes are reverted on the next deploy.
+- The backend was originally hand-built in the console and converted to this template. The conversion surfaced two bugs, both fixed: a custom integration that mapped every response to HTTP 200 (replaced with proxy integration, so real status codes reach the device), and an unused OPTIONS method left over from the console's CORS setup (removed). Historical records were migrated with a disposable one-off stack that was deleted after the copy.
 
 ## Security
 
-The only thing exposed to the internet is the API Gateway endpoint. The device itself can't be reached from outside.  It sits behind home NAT and never listens for incoming connections, it only makes outbound ones. So there's nothing on the device side to attack remotely.
+- The device sits behind home NAT and makes outbound connections only; the API endpoint is the sole exposed surface.
+- The API key is rate limiting and blast-radius control, not authentication. The usage plan caps rate, burst, and daily quota.
+- The API is one resource, one method (POST).
+- WiFi and API credentials live in a gitignored `config.h`. The notification email is supplied as a pipeline parameter override, not committed.
 
-A few specifics:
+Each Lambda has its own role. No managed policies; every grant is explicit:
 
-- **The API key isn't authentication.** It's rate-limiting and blast-radius control. Fine for household feeding data; not something I'd rely on for anything sensitive.
-- **A usage plan caps the damage** if the key ever leaks I have rate, burst, and monthly quota so no one can run up cost or hammer the endpoint.
-- **The API is small on purpose.** One resource, POST and OPTIONS only.
-- **Secrets stay out of git.** WiFi and API credentials live in a gitignored `config.h`. The risk I actually care about is committing them to a public repo, which is easy to do by accident, not someone pulling them off the flash chip, which needs the device in hand. So I guard against the first and accept the second.
+| Role | Permission | Scope |
+|---|---|---|
+| Ingest Lambda | `dynamodb:PutItem` | feeding log table only |
+| Ingest Lambda | write logs | own log group only (no `CreateLogGroup`) |
+| Notifier Lambda | read stream | this table's stream only |
+| Notifier Lambda | `sns:Publish` | one topic |
+| Notifier Lambda | write logs | own log group only |
 
-The Lambda can do exactly one thing:
-
-| Role | Policy | What it can do | Where |
-|---|---|---|---|
-| Lambda execution role | `AWSLambdaBasicExecutionRole` | write logs | CloudWatch |
-| Lambda execution role | `DB-write-policy` (custom) | `dynamodb:PutItem` only | `DogFeedingLogs` table |
-
-No read, no delete, no scan, and it can't reach anything else.
+Neither function can read, scan, or delete table data. Boundaries are verified by testing that denied actions raise `AccessDeniedException`.
 
 ## Reliability
 
-The queue-and-backoff setup means a flaky connection never costs a record. Feedings pile up locally and drain when the network comes back. On boot the device checks the clock is alive and syncs time over NTP. Writes are idempotent, so a retry can't create a duplicate.
+- Local-first writes; the sync queue drains after outages with backoff.
+- RTC health check and NTP sync on boot.
+- Idempotent cloud writes via conditional put on the event ID.
+- The notifier logs and skips failed stream records rather than blocking the shard.
+
+## Repository layout
+
+```
+cloud/
+  infra/    CloudFormation template + parameter config
+  lambda/   Lambda sources; the template's inline code mirrors these
+firmware/   ESP32 source
+docs/       images and diagrams
+```

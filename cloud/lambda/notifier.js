@@ -1,7 +1,8 @@
-// luna-feeder-notifier v2 - stream consumer for the Dog Feeding Tracker.
-// CommonJS build (ZipFile constraint). Canonical .mjs lives in the repo.
-// NOTE: this file must stay UTF-8 - it contains emoji in the Message
-// strings. Emoji are legal in the SNS Message body, NEVER in Subject.
+// Notifier for the Luna Feeder: consumes the feeding table's
+// stream and publishes one message per new feeding.
+//
+// Deployed inline via the CloudFormation template (cloud/infra/luna-feeder.yaml).
+// This file is the source of truth; the template's ZipFile block is a copy.
 
 const { SNSClient, PublishCommand } = require('@aws-sdk/client-sns');
 const { unmarshall } = require('@aws-sdk/util-dynamodb');
@@ -12,8 +13,8 @@ const TZ = process.env.DISPLAY_TIMEZONE || 'America/Chicago';
 const WARN_V = Number(process.env.BATTERY_WARN_VOLTS);
 const CRIT_V = Number(process.env.BATTERY_CRIT_VOLTS);
 
-// Data stays UTC in the table; presentation converts at the edge.
-// IANA zone name (not a fixed offset) so DST is handled for free.
+// Timestamps are stored in UTC; convert for display. The IANA zone
+// name keeps DST correct.
 const centralTime = (iso) => {
   const d = new Date(iso);
   if (!iso || Number.isNaN(d.getTime())) return iso || 'an unknown time';
@@ -25,10 +26,9 @@ const centralTime = (iso) => {
   });
 };
 
-// 1S Li-ion: 4.2 full -> long flat plateau ~3.9-3.6 -> knee ~3.5 ->
-// fast dropoff. Voltage is a poor fuel gauge mid-plateau (millivolts
-// per percent) but a good EDGE detector, so we alert on edges rather
-// than estimate percent.
+// 1S li-ion holds a long plateau around 3.9-3.6 V with a knee near
+// 3.5 V. Voltage is a poor fuel gauge mid-plateau but a reliable
+// edge detector, so thresholds alert on the edges.
 const batteryStatus = (v) => {
   if (v == null || !Number.isFinite(v)) return { line: null, subjectTag: '' };
   const s = v.toFixed(2) + ' V';
@@ -47,12 +47,10 @@ const batteryStatus = (v) => {
 exports.handler = async (event) => {
   for (const record of event.Records ?? []) {
     try {
-      // Only new feedings notify. MODIFY (console edits) and REMOVE
-      // (deletions) are invoked but skipped here.
+      // New feedings only; MODIFY and REMOVE events are skipped.
       if (record.eventName !== 'INSERT') continue;
 
-      // Stream records arrive in low-level DynamoDB JSON - the
-      // Document client's conveniences do not apply here.
+      // Stream records arrive as DynamoDB JSON.
       const item = unmarshall(record.dynamodb.NewImage);
 
       const name = item.person ?? 'Someone';
@@ -66,17 +64,12 @@ exports.handler = async (event) => {
 
       await sns.send(new PublishCommand({
         TopicArn: TOPIC_ARN,
-        // Subject MUST be ASCII (<=100 chars, no line breaks). An
-        // emoji here fails the publish with InvalidParameter, and
-        // because this handler logs-and-continues, the symptom would
-        // be "notifications silently stopped".
+        // SNS Subject must be ASCII; emoji stay in the body.
         Subject: 'Luna fed: ' + meal + ' by ' + name + batt.subjectTag,
         Message: lines.join('\n'),
       }));
     } catch (err) {
-      // Log-and-continue by design: throwing makes the event source
-      // mapping retry the batch until records expire (24h), so one
-      // bad record would block every notification behind it.
+      // Per-record handling: one bad record must not block the shard.
       console.error('Notify failed for record', record.eventID, err);
     }
   }
