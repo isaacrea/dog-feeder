@@ -26,7 +26,7 @@ ESP32 tracker that logs who fed the dog, when, and which meal, and blocks accide
 
 The device is the source of truth; the cloud is a visibility layer. All feeding logic runs locally. If WiFi or AWS is unavailable, the feeder works unchanged and syncs pending records when connectivity returns.
 
-The notification path is driven off the DynamoDB stream and is independent of ingest — a notification failure cannot affect recording.
+The notification path is driven off the DynamoDB stream and is independent of ingest, a notification failure cannot affect recording.
 
 ## Feeding logic
 
@@ -45,9 +45,9 @@ The recency window is tuned toward false warnings rather than missed double-feed
 
 ## Sync
 
-![Sync sequence: write locally first, enqueue, then POST or retry with backoff](docs/sync-sequence.png)
+![Sync sequence: write locally first, enqueue, then POST or retry on next wakeup](docs/sync-sequence.png)
 
-Feedings are written locally first, then queued. The queue POSTs to AWS when reachable and retries with backoff when not. Each record carries a stable event ID and the cloud write is conditional on it, so retries cannot create duplicates.
+Feedings are written locally first, then queued. The queue POSTs to AWS when reachable and retries on next wakeup when not. Each record carries a stable event ID and the cloud write is conditional on it, so retries cannot create duplicates.
 
 ## Notifications
 
@@ -88,7 +88,7 @@ Neither function can read, scan, or delete table data. Boundaries are verified b
 
 ## Reliability
 
-- Local-first writes; the sync queue drains after outages with backoff.
+- Local-first writes; the sync queue drains after outages on next wakeup.
 - RTC health check and NTP sync on boot.
 - Idempotent cloud writes via conditional put on the event ID.
 - The notifier logs and skips failed stream records rather than blocking the shard.
