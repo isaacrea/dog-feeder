@@ -24,13 +24,43 @@ Parameters:
     Default: 500
     Description: Maximum requests per quota period.
 
-  NotificationEmail:
+  # Each non-empty address gets its own SNS subscription and must complete a
+  # one-time confirmation click before receiving anything. Email 1 is
+  # required; 2-5 are optional. The optional pattern's ^$ alternative permits
+  # the empty-string default, which the strict pattern would reject.
+  NotificationEmail1:
     Type: String
     AllowedPattern: '^[^\s@]+@[^\s@]+\.[^\s@]+$'
     ConstraintDescription: Must be a valid email address.
-    Description: >-
-      Address that receives feeding notifications. Requires a one-time
-      confirmation click after the subscription is created.
+    Description: Primary address for feeding notifications. Required.
+
+  NotificationEmail2:
+    Type: String
+    Default: ''
+    AllowedPattern: '^$|^[^\s@]+@[^\s@]+\.[^\s@]+$'
+    ConstraintDescription: Must be a valid email address or empty.
+    Description: Additional notification address. Optional.
+
+  NotificationEmail3:
+    Type: String
+    Default: ''
+    AllowedPattern: '^$|^[^\s@]+@[^\s@]+\.[^\s@]+$'
+    ConstraintDescription: Must be a valid email address or empty.
+    Description: Additional notification address. Optional.
+
+  NotificationEmail4:
+    Type: String
+    Default: ''
+    AllowedPattern: '^$|^[^\s@]+@[^\s@]+\.[^\s@]+$'
+    ConstraintDescription: Must be a valid email address or empty.
+    Description: Additional notification address. Optional.
+
+  NotificationEmail5:
+    Type: String
+    Default: ''
+    AllowedPattern: '^$|^[^\s@]+@[^\s@]+\.[^\s@]+$'
+    ConstraintDescription: Must be a valid email address or empty.
+    Description: Additional notification address. Optional.
 
   # Voltage thresholds for battery alerts. Tune after calibrating the device
   # ADC. Keep crit below warn; this is not validated by the template.
@@ -47,6 +77,14 @@ Parameters:
     MinValue: 3.0
     MaxValue: 4.2
     Description: At or below this voltage, emails flag the battery as critical.
+
+# Evaluated from parameter values before any resource is created. A resource
+# gated by a false condition is absent from the processed template.
+Conditions:
+  HasEmail2: !Not [!Equals [!Ref NotificationEmail2, '']]
+  HasEmail3: !Not [!Equals [!Ref NotificationEmail3, '']]
+  HasEmail4: !Not [!Equals [!Ref NotificationEmail4, '']]
+  HasEmail5: !Not [!Equals [!Ref NotificationEmail5, '']]
 
 Resources:
 
@@ -92,7 +130,8 @@ Resources:
               Service: lambda.amazonaws.com
             Action: sts:AssumeRole
       Policies:
-        # Write-only: PutItem on the one table.
+        # Write-only: PutItem on the one table. Conditional writes need no
+        # read permission.
         - PolicyName: WriteFeedingLogs
           PolicyDocument:
             Version: '2012-10-17'
@@ -112,6 +151,7 @@ Resources:
                 Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/luna-feeder-ingest-iac:*'
 
   # Inline code deploys as index.js and runs as CommonJS.
+  # Source of truth: cloud/lambda/storeDogFeedingLog.js. Edit there, copy here.
   IngestFunction:
     Type: AWS::Lambda::Function
     # Without this, Lambda auto-creates an unmanaged log group on first invoke.
@@ -289,13 +329,48 @@ Resources:
       # Shown as the sender name on emails.
       DisplayName: Luna Feeder
 
-  # Requires a one-time email confirmation; stack status does not track it.
+  # Each subscription requires a one-time confirmation click from its
+  # address; stack status does not track confirmation. Logical ID kept from
+  # the single-email revision so the existing confirmed subscription is not
+  # replaced.
   NotificationEmailSubscription:
     Type: AWS::SNS::Subscription
     Properties:
       TopicArn: !Ref NotificationTopic
       Protocol: email
-      Endpoint: !Ref NotificationEmail
+      Endpoint: !Ref NotificationEmail1
+
+  EmailSubscription2:
+    Type: AWS::SNS::Subscription
+    Condition: HasEmail2
+    Properties:
+      TopicArn: !Ref NotificationTopic
+      Protocol: email
+      Endpoint: !Ref NotificationEmail2
+
+  EmailSubscription3:
+    Type: AWS::SNS::Subscription
+    Condition: HasEmail3
+    Properties:
+      TopicArn: !Ref NotificationTopic
+      Protocol: email
+      Endpoint: !Ref NotificationEmail3
+
+  EmailSubscription4:
+    Type: AWS::SNS::Subscription
+    Condition: HasEmail4
+    Properties:
+      TopicArn: !Ref NotificationTopic
+      Protocol: email
+      Endpoint: !Ref NotificationEmail4
+
+  EmailSubscription5:
+    Type: AWS::SNS::Subscription
+    Condition: HasEmail5
+    Properties:
+      TopicArn: !Ref NotificationTopic
+      Protocol: email
+      Endpoint: !Ref NotificationEmail5
 
   NotifierFunctionLogGroup:
     Type: AWS::Logs::LogGroup
@@ -350,6 +425,7 @@ Resources:
                 Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/luna-feeder-notifier-iac:*'
 
   # Inline code deploys as index.js and runs as CommonJS.
+  # Source of truth: cloud/lambda/notifyDogFeeding.js. Edit there, copy here.
   NotifierFunction:
     Type: AWS::Lambda::Function
     DependsOn: NotifierFunctionLogGroup
@@ -369,7 +445,6 @@ Resources:
         ZipFile: |
           // Notifier for the Luna Feeder: consumes the feeding table's
           // stream and publishes one message per new feeding.
-          // deployed via pipeline
 
           const { SNSClient, PublishCommand } = require('@aws-sdk/client-sns');
           const { unmarshall } = require('@aws-sdk/util-dynamodb');
