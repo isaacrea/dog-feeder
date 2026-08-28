@@ -1,4 +1,0 @@
-curl -i -X POST "<ENDPOINT_URL>" \
-  -H "x-api-key: <API_KEY>" \
-  -H "Content-Type: application/json" \
-  -d '{"eventId":"use2-001","person":"Isaac","timestamp":"2026-08-17T12:00:00Z","meal":"breakfast","batteryVoltage":3.88,"ageSec":5}'
