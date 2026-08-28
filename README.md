@@ -4,6 +4,8 @@
 
 ESP32 tracker that logs who fed the dog, when, and which meal, and blocks accidental double-feeds. Records live on the device; an AWS backend provides remote history and email notifications. Built alongside AWS Solutions Architect Associate study.
 
+To deploy the backend in your own account, see [DEPLOYMENT.md](DEPLOYMENT.md).
+
 ## Hardware
 
 <img src="docs/internals.png" alt="ESP32 Feather V2 wired to the DS3231 RTC and OLED" width="480">
