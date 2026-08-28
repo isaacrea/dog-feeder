@@ -53,12 +53,13 @@ IAM roles, and removes everything it created when the stack is deleted.
    (clone, or download the raw file).
 3. Console -> **CloudFormation** -> **Create stack** -> **With new resources
    (standard)**.
-4. **Choose an existing template** -> **Upload a template file** -> select
-   `luna-feeder.yaml` -> Next.
+4. **Choose an existing template** -> **Upload a template file** ->
+   **Choose file** -> select `luna-feeder.yaml` from your files -> Next.
 5. **Stack name:** anything you like, e.g. `luna-feeder`.
 6. Fill in parameters (reference table in section 4). Minimum: enter your
    email as `NotificationEmail1` and accept every other default.
-7. Next through stack options. On the review page, check the box
+7. On **Configure stack options**, leave all settings as is and click Next.
+   On the review page, check the box
    **"I acknowledge that AWS CloudFormation might create IAM resources."**
 8. **Submit**, then watch the **Events** tab. Expect `CREATE_COMPLETE` on
    the stack in roughly 3–5 minutes.
@@ -108,17 +109,19 @@ resend. Unconfirmed subscriptions expire after about 3 days.
 
 ## 6. Stack outputs
 
-CloudFormation -> your stack -> **Outputs** tab.
+CloudFormation -> your stack -> **Outputs** tab. Listed alphabetically,
+matching the console's ordering.
 
 | Output | What it is | What you do with it |
 |---|---|---|
-| `InvokeUrl` | The complete API endpoint, including stage and path | POST to it in section 8 — use as-is, append nothing |
 | `ApiKeyId` | The API key's **ID** (not the secret) | Feed it to the retrieval step in section 7 |
-| `NotificationTopicArn` | SNS topic ARN | Subscription status checks (section 5) |
-| `TableName` / `TableArn` | The DynamoDB table | Verification (section 9) |
-| `TableStreamArn` | The table's stream ARN | Reference only |
-| `RestApiId` | API Gateway ID | Reference only |
 | `IngestFunctionArn` | Ingest Lambda ARN | Reference only |
+| `InvokeUrl` | The complete API endpoint, including stage and path | POST to it in section 8 — use as-is, append nothing |
+| `NotificationTopicArn` | SNS topic ARN | Subscription status checks (section 5) |
+| `RestApiId` | API Gateway ID | Reference only |
+| `TableArn` | The DynamoDB table's ARN | Reference only |
+| `TableName` | The DynamoDB table's name | Verification (section 9) |
+| `TableStreamArn` | The table's stream ARN | Reference only |
 
 ## 7. Retrieve the API key value
 
@@ -142,28 +145,29 @@ exposed through CloudFormation. Retrieve it either way:
 
 ## 8. Test the API
 
-The requests and expected responses are identical whichever client you use.
-Three options:
+The requests and expected responses are identical from either client.
 
-**A. Local terminal (macOS or Linux).** curl ships with macOS; every command
-in this section works verbatim in Terminal. (Windows: use `curl.exe` in
-PowerShell — plain `curl` there is an alias for a different tool.)
+**A. Local terminal (macOS, Linux, or Windows).** curl ships with macOS and
+most Linux distributions, and the commands below work verbatim. On Windows,
+use `curl.exe` in PowerShell — plain `curl` there is an alias for a
+different tool.
 
 **B. AWS CloudShell — zero local setup.** Click the terminal icon in the
 console's top bar, in the same region as the stack. curl and an
 authenticated AWS CLI are preinstalled, so the entire loop — key retrieval
-included — runs in one window:
+included — runs in one window.
 
-```bash
-KEY=$(aws apigateway get-api-key --api-key <ApiKeyId output> --include-value --query 'value' --output text)
-URL="<InvokeUrl output>"
-```
-
-For options A and B, set two variables:
+Set two variables:
 
 ```bash
 URL="<InvokeUrl output>"
 KEY="<API key value from section 7>"
+```
+
+In CloudShell, `KEY` can come straight from the CLI instead of pasting:
+
+```bash
+KEY=$(aws apigateway get-api-key --api-key <ApiKeyId output> --include-value --query 'value' --output text)
 ```
 
 Baseline request:
@@ -210,7 +214,6 @@ Suggested test matrix:
 | 5 | misspell the URL path | `403` `{"message":"Missing Authentication Token"}` — API Gateway's confusing signature for *wrong URL*, not an auth problem |
 | 6 | new `eventId`, `batteryVoltage: 3.55` | `200`; email includes a battery-low line and subject tag `[battery low]` |
 | 7 | new `eventId`, `batteryVoltage: 3.40` | `200`; email tagged `[battery critical]` |
-| 8 | burst well past `ThrottleBurstLimit` (e.g. 30 rapid requests) | some `429 Too Many Requests`. Note: these count against the daily quota |
 
 ## 9. Verify end to end
 
