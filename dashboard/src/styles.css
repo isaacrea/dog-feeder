@@ -1,6 +1,7 @@
-/* Tokens. Meal colors are categorical slots 1-3 (validated all-pairs, light
-   and dark); battery uses slot 7 so it never reads as a meal. Status colors
-   are reserved for status and always ship with an icon and a label. */
+/* Tokens for the Auto theme: Studio, light or dark to follow the device.
+   Every other theme (src/themes.js) sets the same tokens as inline custom
+   properties on <html>, which override these. Status colors stay fixed in
+   every theme, and always ship with an icon and a label. */
 :root {
   color-scheme: light;
   --page: #f9f9f7;
@@ -25,7 +26,7 @@
 }
 
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
+  :root {
     color-scheme: dark;
     --page: #0d0d0d;
     --surface: #1a1a19;
@@ -41,23 +42,6 @@
     --battery: #9085e9;
     --focus: #3987e5;
   }
-}
-
-:root[data-theme="dark"] {
-  color-scheme: dark;
-  --page: #0d0d0d;
-  --surface: #1a1a19;
-  --ink: #ffffff;
-  --ink-2: #c3c2b7;
-  --grid: #2c2c2a;
-  --axis: #383835;
-  --border: rgba(255, 255, 255, 0.1);
-  --wash: rgba(255, 255, 255, 0.06);
-  --breakfast: #3987e5;
-  --dinner: #d95926;
-  --extra: #199e70;
-  --battery: #9085e9;
-  --focus: #3987e5;
 }
 
 /* ---- Base ----------------------------------------------------------------- */
@@ -90,6 +74,8 @@ code { font-size: 0.8125rem; word-break: break-all; }
 /* ---- Header & controls ------------------------------------------------------ */
 
 .top { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+.top-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
+.btn-theme { display: inline-flex; align-items: center; gap: 6px; }
 .sub { color: var(--ink-2); font-size: 0.875rem; }
 .badge {
   font-size: 0.75rem; font-weight: 600; padding: 3px 10px; border-radius: 999px; white-space: nowrap;
@@ -315,3 +301,62 @@ th { position: sticky; top: 0; background: var(--surface); font-weight: 600; }
 
 .quality { margin: 0; padding-left: 1.1rem; font-size: 0.8125rem; color: var(--ink-2); }
 .quality li + li { margin-top: 3px; }
+
+/* ---- Theme picker ----------------------------------------------------------------- */
+
+.sheet {
+  width: min(780px, calc(100vw - 24px)); max-height: min(88vh, 920px); padding: 0;
+  border: 1px solid var(--border); border-radius: 16px; background: var(--page); color: var(--ink);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.35);
+}
+.sheet[open] { display: flex; flex-direction: column; }
+.sheet::backdrop { background: rgba(0, 0, 0, 0.45); }
+.sheet-head {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;
+  padding: 16px 16px 12px; border-bottom: 1px solid var(--border);
+}
+.theme-list { min-height: 0; margin: 0; padding: 4px 16px 18px; border: 0; overflow: auto; }
+.theme-group { margin: 14px 0 8px; font-size: 0.8125rem; font-weight: 600; color: var(--ink-2); }
+.theme-grid { display: grid; gap: 10px; margin-top: 12px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.theme-group + .theme-grid { margin-top: 0; }
+@media (min-width: 640px) { .theme-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+/* Auto shows light and dark side by side, so it gets a wider card. */
+.theme-option.is-auto { grid-column: 1 / -1; }
+@media (min-width: 640px) { .theme-option.is-auto { grid-column: span 2; } }
+
+.theme-option {
+  position: relative; display: flex; flex-direction: column; gap: 6px; min-width: 0; padding: 8px;
+  border-radius: 12px; border: 1px solid var(--border); background: var(--surface); cursor: pointer;
+}
+.theme-option:hover { border-color: var(--axis); }
+.theme-option input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.theme-option:has(input:checked) { border-color: var(--ink); box-shadow: 0 0 0 1px var(--ink); }
+.theme-option:has(input:checked) .theme-name::after { content: " \2713"; }
+.theme-option:has(input:focus-visible) { outline: 2px solid var(--focus); outline-offset: 2px; }
+.theme-previews { display: flex; gap: 4px; }
+.theme-meta { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; }
+.theme-name { font-size: 0.875rem; font-weight: 600; }
+.theme-mode { font-size: 0.75rem; color: var(--ink-2); white-space: nowrap; }
+.theme-blurb { font-size: 0.75rem; line-height: 1.3; color: var(--ink-2); }
+
+/* A preview renders in its own theme: its tokens are set inline on .tp. */
+.tp {
+  flex: 1; min-width: 0; overflow: hidden; display: grid; gap: 5px; padding: 8px; border-radius: 8px;
+  background: var(--surface); color: var(--ink); border: 1px solid var(--grid);
+  box-shadow: 0 0 0 3px var(--page);
+}
+.tp-time { font-size: 0.9375rem; font-weight: 650; line-height: 1.1; }
+.tp-sub { font-size: 0.6875rem; color: var(--ink-2); }
+.tp-cells { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 3px; }
+.tp-cell { display: flex; flex-direction: column; gap: 2px; height: 16px; }
+.tp-half { flex: 1; border-radius: 2px; }
+.tp-b.is-fed { background: var(--breakfast); }
+.tp-d.is-fed { background: var(--dinner); }
+.tp-b.is-off { background: color-mix(in srgb, var(--breakfast) 35%, var(--surface)); }
+.tp-d.is-off { background: color-mix(in srgb, var(--dinner) 35%, var(--surface)); }
+.tp-half.is-missed { box-shadow: inset 0 0 0 1px var(--axis); }
+.tp-foot { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.tp-dots { display: flex; gap: 4px; }
+.tp-dots i { width: 8px; height: 8px; border-radius: 50%; }
+.tp-line { width: 44px; height: 14px; flex: none; }
+.tp-line polyline { fill: none; stroke: var(--battery); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }

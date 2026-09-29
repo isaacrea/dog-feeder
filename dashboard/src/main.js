@@ -5,6 +5,8 @@ import './styles.css';
 import { analyze } from './analytics.js';
 import { ApiError, fetchFeedings } from './api.js';
 import { config, liveConfigProblem } from './config.js';
+import { initialThemeId } from './themes.js';
+import { initThemePicker } from './themePicker.js';
 import { formatAgo } from './time.js';
 import { h, hideTip, icon, showEmpty, showError, showLoading } from './ui.js';
 import { renderBattery } from './sections/battery.js';
@@ -161,6 +163,7 @@ function tick() {
 }
 
 function init() {
+  initThemePicker({ initialId: initialThemeId(config.theme), onChange: render });
   if (config.dataSource === 'mock') {
     const badge = $('#mock-badge');
     badge.hidden = false;

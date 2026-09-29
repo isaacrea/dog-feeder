@@ -24,9 +24,22 @@ or `slow` in `.env.local` to see each state.
 value). Restart `npm run dev` after any edit.
 
 ```bash
-npm test          # analytics, mock generator, and Central-time unit tests
+npm test          # analytics, mock generator, Central-time, and theme contrast tests
 npm run build     # production build in dist/ (always live data)
 ```
+
+## Color themes
+
+The **Theme** button (top right) opens a picker with live previews of 16
+themes plus Auto, which follows the device between Studio and Studio Dark.
+The choice applies instantly and is saved in that browser;
+`public/theme-boot.js` re-applies it before first paint so there is no flash.
+Set a default for everyone with `VITE_THEME` in `.env.local`.
+
+Themes live in `src/themes.js`. Each theme's breakfast, dinner, and extra
+colors were chosen as a set against that theme's own background, so they stay
+distinguishable with color-blindness and readable (marks at least 3:1).
+`test/themes.test.js` re-checks text and mark contrast whenever a color changes.
 
 ## Layout
 
@@ -38,3 +51,4 @@ npm run build     # production build in dist/ (always live data)
 | `src/mock.js` | Dev-only mock data that follows the firmware's rules |
 | `src/sections/` | One renderer per card |
 | `src/charts.js`, `src/ui.js` | uPlot glue, DOM helpers, tooltip, section states |
+| `src/themes.js`, `src/themePicker.js` | Color themes and the picker dialog |

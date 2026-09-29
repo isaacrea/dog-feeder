@@ -16,6 +16,8 @@ export const config = {
   mockScenario: env.VITE_MOCK_SCENARIO || 'normal',
   apiUrl: (env.VITE_API_URL || '').trim(),
   apiKey: (env.VITE_API_KEY || '').trim(),
+  // Default color theme (see src/themes.js); a viewer's own pick overrides it.
+  theme: (env.VITE_THEME || 'auto').trim(),
   // Match the stack's BatteryWarnVolts / BatteryCritVolts parameters.
   warnVolts: num(env.VITE_BATTERY_WARN_VOLTS, 3.6),
   critVolts: num(env.VITE_BATTERY_CRIT_VOLTS, 3.45),
