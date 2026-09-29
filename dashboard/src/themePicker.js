@@ -2,7 +2,7 @@
 // theme's tokens as inline custom properties, so it renders in that theme's
 // colors whatever the page is currently using. Choosing applies instantly.
 
-import { THEMES, applyTheme, themeById, themeVars } from './themes.js';
+import { AUTO_PAIR, THEMES, applyTheme, themeById, themeVars } from './themes.js';
 import { h } from './ui.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -35,7 +35,7 @@ function preview(theme) {
 
 function option(theme) {
   const previews = theme.mode === 'auto'
-    ? [preview(themeById('studio-light')), preview(themeById('studio-dark'))]
+    ? [preview(themeById(AUTO_PAIR.light)), preview(themeById(AUTO_PAIR.dark))]
     : [preview(theme)];
   return h('label', { class: `theme-option${theme.mode === 'auto' ? ' is-auto' : ''}` },
     h('input', { type: 'radio', name: 'theme', value: theme.id }),

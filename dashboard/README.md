@@ -30,16 +30,19 @@ npm run build     # production build in dist/ (always live data)
 
 ## Color themes
 
-The **Theme** button (top right) opens a picker with live previews of 16
-themes plus Auto, which follows the device between Studio and Studio Dark.
-The choice applies instantly and is saved in that browser;
-`public/theme-boot.js` re-applies it before first paint so there is no flash.
-Set a default for everyone with `VITE_THEME` in `.env.local`.
+The **Theme** button (top right) opens a picker with live previews: **Auto**
+(the default: Sunset by day, Moonlight by night, following the device),
+**Sunset**, **Studio**, **Moonlight**, and **Studio Dark**. The choice applies
+instantly and is saved in that browser; `public/theme-boot.js` re-applies it
+before first paint so there is no flash. Set a default for everyone with
+`VITE_THEME` in `.env.local`.
 
-Themes live in `src/themes.js`. Each theme's breakfast, dinner, and extra
-colors were chosen as a set against that theme's own background, so they stay
-distinguishable with color-blindness and readable (marks at least 3:1).
-`test/themes.test.js` re-checks text and mark contrast whenever a color changes.
+Themes live in `src/themes.js`. Auto is plain CSS, so its tokens are also the
+defaults at the top of `src/styles.css`; a test fails if the two drift. Each
+theme's breakfast, dinner, and extra colors were chosen as a set against that
+theme's own background, so they stay distinguishable with color-blindness and
+readable (marks at least 3:1). `test/themes.test.js` re-checks text, mark, and
+focus-ring contrast whenever a color changes.
 
 ## Layout
 

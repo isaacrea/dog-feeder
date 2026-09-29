@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { THEMES, initialThemeId, themeById, themeVars } from '../src/themes.js';
+import fs from 'node:fs';
+import { AUTO_PAIR, THEMES, initialThemeId, themeById, themeVars } from '../src/themes.js';
 
 // WCAG 2 relative luminance and contrast ratio.
 const lum = (hex) => {
@@ -18,11 +19,10 @@ const contrast = (a, b) => {
 const FIXED = THEMES.filter((t) => t.mode !== 'auto');
 const COLOR_KEYS = ['page', 'surface', 'ink', 'ink2', 'muted', 'grid', 'axis', 'breakfast', 'dinner', 'extra', 'battery'];
 
-test('theme list: Auto first, unique ids, a wide light and dark range', () => {
-  assert.equal(THEMES[0].id, 'auto');
-  assert.equal(new Set(THEMES.map((t) => t.id)).size, THEMES.length);
-  assert.ok(FIXED.filter((t) => t.mode === 'light').length >= 6);
-  assert.ok(FIXED.filter((t) => t.mode === 'dark').length >= 6);
+test('theme list: Auto, then Sunset, Studio, Moonlight, Studio Dark', () => {
+  assert.deepEqual(THEMES.map((t) => t.id), ['auto', 'sunset', 'studio-light', 'moonlight', 'studio-dark']);
+  assert.equal(themeById(AUTO_PAIR.light).mode, 'light');
+  assert.equal(themeById(AUTO_PAIR.dark).mode, 'dark');
   assert.equal(themeById('no-such-theme').id, 'auto');
 });
 
@@ -42,6 +42,9 @@ for (const t of FIXED) {
     on(t.breakfast, t.surface, 3, 'breakfast marks');
     on(t.dinner, t.surface, 3, 'dinner marks');
     on(t.battery, t.surface, 3, 'battery line');
+    const focus = themeVars(t)['--focus'];
+    on(focus, t.page, 3, 'focus ring on page');
+    on(focus, t.surface, 3, 'focus ring on cards');
     // Extra feedings are rare; Studio's aqua is 2.7:1 and relies on the
     // legend and table views. Nothing may go lower.
     on(t.extra, t.surface, 2.5, 'extra marks');
@@ -51,19 +54,36 @@ for (const t of FIXED) {
 }
 
 test('themeVars: every token the CSS uses, derived border and wash', () => {
-  const v = themeVars(themeById('nord'));
+  const v = themeVars(themeById('moonlight'));
   for (const k of ['--page', '--surface', '--ink', '--ink-2', '--muted', '--grid', '--axis', '--border',
     '--wash', '--breakfast', '--dinner', '--extra', '--battery', '--focus']) {
     assert.ok(v[k], k);
   }
   assert.equal(v['color-scheme'], 'dark');
-  assert.match(v['--border'], /^rgba\(236, 239, 244, 0\.1\)$/);
+  assert.equal(v['--border'], 'rgba(243, 241, 255, 0.1)');
   assert.equal(themeVars(themeById('auto')), null);
 });
 
 test('initial theme: configured default, falling back to Auto', () => {
   // No localStorage in Node: the saved-choice lookup fails safe.
-  assert.equal(initialThemeId('nord'), 'nord');
+  assert.equal(initialThemeId('moonlight'), 'moonlight');
+  assert.equal(initialThemeId('nord'), 'auto', 'a removed theme falls back');
   assert.equal(initialThemeId('not-a-theme'), 'auto');
   assert.equal(initialThemeId(undefined), 'auto');
+});
+
+// Auto is plain CSS (so it works before any script runs): its default tokens
+// in styles.css must be exactly Sunset's, and Moonlight's under dark mode.
+test('styles.css defaults equal Sunset (light) and Moonlight (dark)', () => {
+  const css = fs.readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8');
+  const tokens = (block) => Object.fromEntries(
+    [...block.matchAll(/(--[a-z0-9-]+|color-scheme):\s*([^;]+);/g)].map((m) => [m[1], m[2].trim()]));
+  const light = tokens(css.slice(css.indexOf(':root {'), css.indexOf('}', css.indexOf(':root {'))));
+  const darkAt = css.indexOf(':root {', css.indexOf('@media (prefers-color-scheme: dark)'));
+  const dark = tokens(css.slice(darkAt, css.indexOf('}', darkAt)));
+  for (const [id, block] of [[AUTO_PAIR.light, light], [AUTO_PAIR.dark, dark]]) {
+    for (const [k, v] of Object.entries(themeVars(themeById(id)))) {
+      assert.equal(block[k], v, `${id} ${k} in styles.css`);
+    }
+  }
 });

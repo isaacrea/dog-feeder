@@ -1,46 +1,48 @@
-/* Tokens for the Auto theme: Studio, light or dark to follow the device.
-   Every other theme (src/themes.js) sets the same tokens as inline custom
-   properties on <html>, which override these. Status colors stay fixed in
-   every theme, and always ship with an icon and a label. */
+/* Tokens for the Auto theme: Sunset by day, Moonlight by night, following the
+   device. These must equal those themes in src/themes.js (test/themes.test.js
+   checks). Any other theme sets the same tokens as inline custom properties
+   on <html>, which override these. Status colors stay fixed in every theme,
+   and always ship with an icon and a label. */
 :root {
   color-scheme: light;
-  --page: #f9f9f7;
-  --surface: #fcfcfb;
-  --ink: #0b0b0b;
-  --ink-2: #52514e;
-  --muted: #898781;
-  --grid: #e1e0d9;
-  --axis: #c3c2b7;
-  --border: rgba(11, 11, 11, 0.1);
-  --wash: rgba(11, 11, 11, 0.05);
-  --breakfast: #2a78d6;
-  --dinner: #eb6834;
-  --extra: #1baf7a;
-  --battery: #4a3aa7;
+  --page: #fbede4;
+  --surface: #fff7f1;
+  --ink: #2a1512;
+  --ink-2: #684741;
+  --muted: #977670;
+  --grid: #f0dcd1;
+  --axis: #dec1b4;
+  --border: rgba(42, 21, 18, 0.1);
+  --wash: rgba(42, 21, 18, 0.05);
+  --breakfast: #bf8105;
+  --dinner: #c34695;
+  --extra: #454ead;
+  --battery: #018d87;
+  --focus: #c34695;
   --good: #0ca30c;
   --warning: #fab219;
   --serious: #ec835a;
   --critical: #d03b3b;
-  --focus: #2a78d6;
   --font: system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
     color-scheme: dark;
-    --page: #0d0d0d;
-    --surface: #1a1a19;
-    --ink: #ffffff;
-    --ink-2: #c3c2b7;
-    --grid: #2c2c2a;
-    --axis: #383835;
-    --border: rgba(255, 255, 255, 0.1);
-    --wash: rgba(255, 255, 255, 0.06);
-    --breakfast: #3987e5;
-    --dinner: #d95926;
-    --extra: #199e70;
-    --battery: #9085e9;
-    --focus: #3987e5;
+    --page: #0c0b18;
+    --surface: #161529;
+    --ink: #f3f1ff;
+    --ink-2: #c2bee0;
+    --muted: #8c88ab;
+    --grid: #24223f;
+    --axis: #353259;
+    --border: rgba(243, 241, 255, 0.1);
+    --wash: rgba(243, 241, 255, 0.06);
+    --breakfast: #b18e15;
+    --dinner: #c25485;
+    --extra: #1292c0;
+    --battery: #9379d7;
+    --focus: #b18e15;
   }
 }
 
