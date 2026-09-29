@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Luna Feeder</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Ccircle cx='10' cy='12.5' r='4' fill='%232a78d6'/%3E%3Ccircle cx='4.5' cy='7.5' r='2' fill='%232a78d6'/%3E%3Ccircle cx='8' cy='4.5' r='2' fill='%232a78d6'/%3E%3Ccircle cx='12' cy='4.5' r='2' fill='%232a78d6'/%3E%3Ccircle cx='15.5' cy='7.5' r='2' fill='%232a78d6'/%3E%3C/svg%3E" />
+  </head>
+  <body>
+    <div class="wrap">
+      <header class="top">
+        <div>
+          <h1>Luna</h1>
+          <p class="sub">Feeding dashboard · Central time</p>
+        </div>
+        <span id="mock-badge" class="badge" hidden>Mock data</span>
+      </header>
+
+      <div class="controls">
+        <fieldset class="segmented">
+          <legend class="sr-only">Time range</legend>
+          <label><input type="radio" name="range" value="7" /><span>7 days</span></label>
+          <label><input type="radio" name="range" value="30" /><span>30 days</span></label>
+          <label><input type="radio" name="range" value="90" /><span>90 days</span></label>
+        </fieldset>
+        <div class="refresh">
+          <span id="updated" class="muted small" aria-live="polite"></span>
+          <button id="refresh" type="button" class="btn">Refresh</button>
+        </div>
+      </div>
+
+      <div id="banner" class="banner" role="alert" hidden></div>
+
+      <main class="grid">
+        <section class="card span-2" id="now" aria-labelledby="now-h">
+          <header class="card-head"><h2 id="now-h">Right now</h2><p class="desc">Today, in Central time</p></header>
+          <div class="body"></div>
+        </section>
+
+        <section class="card span-2 card-plain" id="streaks" aria-labelledby="streaks-h">
+          <h2 id="streaks-h" class="sr-only">Streaks and consistency</h2>
+          <div class="body"></div>
+        </section>
+
+        <section class="card span-2" id="schedule" aria-labelledby="schedule-h">
+          <header class="card-head"><h2 id="schedule-h">Schedule</h2><p class="desc">When each meal happened, day by day</p></header>
+          <div class="body"></div>
+        </section>
+
+        <section class="card" id="calendar" aria-labelledby="calendar-h">
+          <header class="card-head"><h2 id="calendar-h">Calendar</h2><p class="desc">Both meals of every day at a glance</p></header>
+          <div class="body"></div>
+        </section>
+
+        <section class="card" id="who" aria-labelledby="who-h">
+          <header class="card-head"><h2 id="who-h">Who feeds Luna</h2><p class="desc">Feedings per person, by meal</p></header>
+          <div class="body"></div>
+        </section>
+
+        <section class="card span-2" id="battery" aria-labelledby="battery-h">
+          <header class="card-head"><h2 id="battery-h">Battery</h2><p class="desc">Voltage reported with each feeding, and where it is heading</p></header>
+          <div class="body"></div>
+        </section>
+
+        <section class="card span-2" id="overrides" aria-labelledby="overrides-h">
+          <header class="card-head"><h2 id="overrides-h">Guard overrides</h2><p class="desc">Feedings logged past the device's double-feeding guards</p></header>
+          <div class="body"></div>
+        </section>
+      </main>
+
+      <footer class="card footer" id="quality" aria-label="About this data">
+        <div class="body"></div>
+      </footer>
+    </div>
+    <noscript>This dashboard needs JavaScript.</noscript>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
