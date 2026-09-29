@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Luna Feeder - ingest API, feeding log table, and stream-driven notifications
+Description: Luna Feeder - ingest and read API, feeding log table, and stream-driven notifications
 
 Parameters:
 
@@ -23,6 +23,33 @@ Parameters:
     Type: Number
     Default: 500
     Description: Maximum requests per quota period.
+
+  # The dashboard gets its own key and usage plan so the device key stays on
+  # the device, with a tighter ceiling than the device's.
+  DashboardThrottleRateLimit:
+    Type: Number
+    Default: 1
+    Description: Dashboard key steady-state request rate ceiling, requests per second.
+
+  DashboardThrottleBurstLimit:
+    Type: Number
+    Default: 5
+    Description: Dashboard key burst capacity, requests. Must be >= DashboardThrottleRateLimit.
+
+  DashboardQuotaLimit:
+    Type: Number
+    Default: 500
+    Description: Maximum dashboard key requests per day.
+
+  # Browsers compare the origin exactly, so a trailing slash or path never
+  # matches. The pattern also keeps quotes out of the static header mappings
+  # built from this value.
+  CorsAllowOrigin:
+    Type: String
+    Default: '*'
+    AllowedPattern: '^(\*|https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?)$'
+    ConstraintDescription: Must be * or one origin such as https://example.com, with no trailing slash or path.
+    Description: Access-Control-Allow-Origin for the read API. '*' suits local development; set the dashboard's hosted origin once it exists.
 
   # Each non-empty address gets its own SNS subscription and must complete a
   # one-time confirmation click before receiving anything. Email 1 is
@@ -230,6 +257,229 @@ Resources:
             body: JSON.stringify(obj),
           });
 
+  # --- Read -----------------------------------------------------------------
+
+  ReadFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/lambda/luna-feeder-read-iac
+      RetentionInDays: 14
+
+  # Separate from the write-only ingest role. The table is keyed on `id`
+  # alone, with no sort key to Query a time range by, so reads Scan; at this
+  # volume a full Scan is a few read units.
+  ReadFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        # Read-only: Scan on the one table. No GetItem or Query; nothing
+        # uses them.
+        - PolicyName: ReadFeedingLogs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: dynamodb:Scan
+                Resource: !GetAtt FeedingLogsTable.Arn
+        - PolicyName: WriteOwnLogs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/luna-feeder-read-iac:*'
+
+  # Inline code deploys as index.js and runs as CommonJS.
+  # Source of truth: cloud/lambda/readFeedingLogs.js. Edit there, copy here.
+  # cloud/lambda/test/readFeedingLogs.test.js fails if the two drift.
+  ReadFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: ReadFunctionLogGroup
+    Properties:
+      FunctionName: luna-feeder-read-iac
+      Runtime: nodejs22.x
+      Handler: index.handler
+      Role: !GetAtt ReadFunctionRole.Arn
+      Timeout: 10
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref FeedingLogsTable
+          DISPLAY_TIMEZONE: America/Chicago
+          CORS_ALLOW_ORIGIN: !Ref CorsAllowOrigin
+      Code:
+        ZipFile: |
+          // Read API for the Luna Feeder: returns the feeding records from the last
+          // N Central-time calendar days, for the dashboard.
+
+          const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
+          const { DynamoDBDocumentClient, ScanCommand } = require('@aws-sdk/lib-dynamodb');
+
+          const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+          const TABLE = process.env.TABLE_NAME;
+          const TZ = process.env.DISPLAY_TIMEZONE || 'America/Chicago';
+          const ALLOW_ORIGIN = process.env.CORS_ALLOW_ORIGIN || '*';
+
+          const ALLOWED_DAYS = [7, 30, 90];
+          const DEFAULT_DAYS = 30;
+
+          // Attributes returned to clients. deviceTimestamp and receivedAt are audit
+          // fields and stay in the table.
+          const FIELDS = ['id', 'person', 'meal', 'timestamp', 'override',
+                          'batteryVoltage', 'timeConfidence', 'timeSource'];
+
+          // Wall-clock parts of an instant in TZ. The IANA zone name keeps DST
+          // correct; h23 avoids "24" for midnight.
+          const wallClock = new Intl.DateTimeFormat('en-US', {
+            timeZone: TZ, hourCycle: 'h23',
+            year: 'numeric', month: '2-digit', day: '2-digit',
+            hour: '2-digit', minute: '2-digit', second: '2-digit',
+          });
+
+          const zonedParts = (ms) => {
+            const p = {};
+            for (const { type, value } of wallClock.formatToParts(ms)) p[type] = value;
+            return p;
+          };
+
+          // TZ's offset from UTC at an instant, in ms (negative in the Americas).
+          const offsetMs = (ms) => {
+            const p = zonedParts(ms);
+            const wall = Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute, +p.second);
+            return wall - Math.floor(ms / 1000) * 1000;
+          };
+
+          // The instant a local calendar date begins. Two passes because the offset
+          // at the first guess can differ across a DST change. US changes happen at
+          // 2 AM, so local midnight always exists exactly once.
+          const localMidnight = (y, m, d) => {
+            const wall = Date.UTC(y, m - 1, d);
+            const guess = wall - offsetMs(wall);
+            return wall - offsetMs(guess);
+          };
+
+          // Start of the window: local midnight (days - 1) calendar days before today,
+          // so days=7 is today plus the six days before it. Stepping calendar days
+          // rather than days * 24 h keeps a week spanning a DST change correct.
+          const windowStart = (nowMs, days) => {
+            const p = zonedParts(nowMs);
+            const d = new Date(Date.UTC(+p.year, +p.month - 1, +p.day - (days - 1)));
+            return localMidnight(d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate());
+          };
+
+          const parseDays = (raw) => {
+            if (raw == null || raw === '') return DEFAULT_DAYS;
+            const n = Number(raw);
+            return ALLOWED_DAYS.includes(n) ? n : null;
+          };
+
+          // localDate is the Central calendar day the feeding belongs to. Grouping by
+          // the UTC date instead would move most dinners to the next day.
+          const toRecord = (item, ms) => {
+            const p = zonedParts(ms);
+            return {
+              id:             item.id,
+              person:         item.person ?? null,
+              meal:           item.meal ?? null,
+              timestamp:      item.timestamp,
+              localDate:      p.year + '-' + p.month + '-' + p.day,
+              localTime:      p.hour + ':' + p.minute,
+              override:       item.override === true,
+              batteryVoltage: Number.isFinite(item.batteryVoltage) ? item.batteryVoltage : null,
+              timeConfidence: item.timeConfidence ?? null,
+              timeSource:     item.timeSource ?? null,
+            };
+          };
+
+          // Items with an unparseable timestamp are counted, not placed. The window
+          // has no upper bound: a device clock running slightly fast must not hide a
+          // feeding that just happened.
+          const build = (items, days, nowMs) => {
+            const fromMs = windowStart(nowMs, days);
+            const inRange = [];
+            let latest = null;
+            let unparseable = 0;
+            for (const item of items) {
+              const ms = Date.parse(item.timestamp);
+              if (!Number.isFinite(ms)) { unparseable++; continue; }
+              if (!latest || ms > latest.ms) latest = { item, ms };
+              if (ms >= fromMs) inRange.push({ item, ms });
+            }
+            inRange.sort((a, b) => a.ms - b.ms);
+            return {
+              timezone:    TZ,
+              days,
+              from:        new Date(fromMs).toISOString(),
+              generatedAt: new Date(nowMs).toISOString(),
+              count:       inRange.length,
+              unparseable,
+              // Most recent record overall, even outside the window, so a silent
+              // device still shows when it last reported.
+              latest:      latest ? toRecord(latest.item, latest.ms) : null,
+              items:       inRange.map((r) => toRecord(r.item, r.ms)),
+            };
+          };
+
+          // Scan reads every item; the table has no sort key to Query by time. Each
+          // page stops at 1 MB, so follow LastEvaluatedKey or results go missing once
+          // the table outgrows one page. The projection trims the payload, not the
+          // read units consumed.
+          const scanAll = async () => {
+            const names = {};
+            FIELDS.forEach((f, i) => { names['#f' + i] = f; });
+            const items = [];
+            let startKey;
+            do {
+              const page = await ddb.send(new ScanCommand({
+                TableName: TABLE,
+                ProjectionExpression: Object.keys(names).join(', '),
+                ExpressionAttributeNames: names,
+                ExclusiveStartKey: startKey,
+              }));
+              items.push(...(page.Items ?? []));
+              startKey = page.LastEvaluatedKey;
+            } while (startKey);
+            return items;
+          };
+
+          exports.handler = async (event, context) => {
+            const days = parseDays(event?.queryStringParameters?.days);
+            if (days == null) {
+              return resp(400, { message: 'days must be one of ' + ALLOWED_DAYS.join(', ') + '.' });
+            }
+            try {
+              const items = await scanAll();
+              const body = build(items, days, Date.now());
+              console.log(JSON.stringify({ days, scanned: items.length, returned: body.count, unparseable: body.unparseable }));
+              return resp(200, body);
+            } catch (err) {
+              // Details stay in CloudWatch; the request ID locates them.
+              console.error('Error:', err);
+              return resp(500, { message: 'Error reading feeding logs.', requestId: context?.awsRequestId });
+            }
+          };
+
+          const resp = (statusCode, obj) => ({
+            statusCode,
+            headers: {
+              'Content-Type': 'application/json',
+              'Cache-Control': 'no-store',
+              'Access-Control-Allow-Origin': ALLOW_ORIGIN,
+            },
+            body: JSON.stringify(obj),
+          });
+
+          // Exposed for unit tests (cloud/lambda/test).
+          exports._internals = { parseDays, windowStart, build };
+
   # --- Edge -----------------------------------------------------------------
 
   FeedingApi:
@@ -274,19 +524,103 @@ Resources:
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${FeedingApi}/*/POST/feedingLogs'
 
-  # Deployments are immutable snapshots. To publish API changes, rename this
-  # logical ID and update the stage's DeploymentId to match.
-  FeedingApiDeployment20260805:
-    Type: AWS::ApiGateway::Deployment
-    DependsOn: FeedingLogsPostMethod
+  # Dashboard read on the same resource: POST records a feeding, GET lists
+  # them. Query string: days=7|30|90 (default 30), validated by the handler.
+  FeedingLogsGetMethod:
+    Type: AWS::ApiGateway::Method
     Properties:
       RestApiId: !Ref FeedingApi
+      ResourceId: !Ref FeedingLogsResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      ApiKeyRequired: true
+      RequestParameters:
+        method.request.querystring.days: false
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ReadFunction.Arn}/invocations'
+
+  # Only this API's GET /feedingLogs may invoke the read function.
+  ReadFunctionInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt ReadFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${FeedingApi}/*/GET/feedingLogs'
+
+  # CORS preflight. A browser sends it before any cross-origin request that
+  # carries x-api-key, and never attaches the key to the preflight itself, so
+  # it cannot require one. MOCK: API Gateway answers directly; no Lambda runs.
+  # Allows GET only, so browser pages cannot POST feedings.
+  FeedingLogsOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref FeedingApi
+      ResourceId: !Ref FeedingLogsResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      ApiKeyRequired: false
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        IntegrationResponses:
+          - StatusCode: '200'
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Origin: !Sub "'${CorsAllowOrigin}'"
+              method.response.header.Access-Control-Allow-Methods: "'GET,OPTIONS'"
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,x-api-key'"
+              method.response.header.Access-Control-Max-Age: "'600'"
+      MethodResponses:
+        - StatusCode: '200'
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: false
+            method.response.header.Access-Control-Allow-Methods: false
+            method.response.header.Access-Control-Allow-Headers: false
+            method.response.header.Access-Control-Max-Age: false
+
+  # Errors API Gateway raises itself (403 missing key, 429 throttled, 5xx
+  # integration failures) never reach a Lambda, so they would lack the CORS
+  # header and a browser would report "CORS error" instead of the real
+  # status. These add it to every such response.
+  Cors4xxGatewayResponse:
+    Type: AWS::ApiGateway::GatewayResponse
+    Properties:
+      RestApiId: !Ref FeedingApi
+      ResponseType: DEFAULT_4XX
+      ResponseParameters:
+        gatewayresponse.header.Access-Control-Allow-Origin: !Sub "'${CorsAllowOrigin}'"
+
+  Cors5xxGatewayResponse:
+    Type: AWS::ApiGateway::GatewayResponse
+    Properties:
+      RestApiId: !Ref FeedingApi
+      ResponseType: DEFAULT_5XX
+      ResponseParameters:
+        gatewayresponse.header.Access-Control-Allow-Origin: !Sub "'${CorsAllowOrigin}'"
+
+  # Deployments are immutable snapshots. To publish API changes, rename this
+  # logical ID and update the stage's DeploymentId to match. DependsOn lists
+  # everything the snapshot must include.
+  FeedingApiDeployment20260929:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - FeedingLogsPostMethod
+      - FeedingLogsGetMethod
+      - FeedingLogsOptionsMethod
+      - Cors4xxGatewayResponse
+      - Cors5xxGatewayResponse
+    Properties:
+      RestApiId: !Ref FeedingApi
+      Description: Adds GET /feedingLogs for the dashboard, with CORS
 
   FeedingApiStage:
     Type: AWS::ApiGateway::Stage
     Properties:
       RestApiId: !Ref FeedingApi
-      DeploymentId: !Ref FeedingApiDeployment20260805
+      DeploymentId: !Ref FeedingApiDeployment20260929
       StageName: !Ref StageName
 
   # Value omitted so API Gateway generates it; keeps the credential out of
@@ -319,6 +653,38 @@ Resources:
       KeyId: !Ref FeedingApiKey
       KeyType: API_KEY
       UsagePlanId: !Ref FeedingUsagePlan
+
+  # API keys are not scoped to methods: any key in a usage plan on this stage
+  # can call every key-required method, so this key can also POST. The key
+  # identifies and throttles the dashboard; it does not authorize it.
+  DashboardApiKey:
+    Type: AWS::ApiGateway::ApiKey
+    Properties:
+      Name: luna-feeder-dashboard-key-iac
+      Description: Read key for the Luna Feeder dashboard
+      Enabled: true
+
+  DashboardUsagePlan:
+    Type: AWS::ApiGateway::UsagePlan
+    Properties:
+      UsagePlanName: luna-feeder-dashboard-usage-plan-iac
+      Description: Rate, burst, and quota ceiling for the dashboard
+      ApiStages:
+        - ApiId: !Ref FeedingApi
+          Stage: !Ref FeedingApiStage
+      Throttle:
+        RateLimit: !Ref DashboardThrottleRateLimit
+        BurstLimit: !Ref DashboardThrottleBurstLimit
+      Quota:
+        Limit: !Ref DashboardQuotaLimit
+        Period: DAY
+
+  DashboardUsagePlanKey:
+    Type: AWS::ApiGateway::UsagePlanKey
+    Properties:
+      KeyId: !Ref DashboardApiKey
+      KeyType: API_KEY
+      UsagePlanId: !Ref DashboardUsagePlan
 
   # --- Notifications --------------------------------------------------------
 
@@ -529,7 +895,9 @@ Resources:
 Outputs:
 
   InvokeUrl:
-    Description: Full endpoint for the device. Update the firmware's secrets with this.
+    Description: >-
+      Full endpoint. The device POSTs here (update the firmware's secrets
+      with this); the dashboard GETs it with ?days=7|30|90.
     Value: !Sub 'https://${FeedingApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${StageName}/feedingLogs'
 
   ApiKeyId:
@@ -537,6 +905,12 @@ Outputs:
       API key ID, not the key value. Retrieve the value at
       API Gateway -> API keys -> select this key -> Show.
     Value: !Ref FeedingApiKey
+
+  DashboardApiKeyId:
+    Description: >-
+      Dashboard API key ID, not the key value. Retrieve the value at
+      API Gateway -> API keys -> luna-feeder-dashboard-key-iac -> Show.
+    Value: !Ref DashboardApiKey
 
   RestApiId:
     Description: REST API ID, the leading segment of the endpoint hostname
@@ -557,6 +931,10 @@ Outputs:
   IngestFunctionArn:
     Description: ARN of the ingest Lambda
     Value: !GetAtt IngestFunction.Arn
+
+  ReadFunctionArn:
+    Description: ARN of the read Lambda
+    Value: !GetAtt ReadFunction.Arn
 
   NotificationTopicArn:
     Description: SNS topic ARN
