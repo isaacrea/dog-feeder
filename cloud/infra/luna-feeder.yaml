@@ -791,7 +791,7 @@ Resources:
                 Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/luna-feeder-notifier-iac:*'
 
   # Inline code deploys as index.js and runs as CommonJS.
-  # Source of truth: cloud/lambda/notifyDogFeeding.js. Edit there, copy here.
+  # Source of truth: cloud/lambda/notifier.js. Edit there, copy here.
   NotifierFunction:
     Type: AWS::Lambda::Function
     DependsOn: NotifierFunctionLogGroup
