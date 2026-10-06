@@ -11,11 +11,15 @@
 //
 // `npm run preview` reuses this proxy, so you can test production builds locally.
 
+import { fileURLToPath } from 'node:url';
 import { defineConfig, loadEnv } from 'vite';
 
 export default defineConfig(({ command, mode }) => {
   // '' loads every variable, not just VITE_ ones. They stay here on the Node side.
-  const env = loadEnv(mode, process.cwd(), '');
+  // Read the .env files beside this config, where Vite itself reads them. The
+  // current directory can differ (`vite build dashboard` from the repo root),
+  // and the guard below would then miss a VITE_API_KEY that Vite still loads.
+  const env = loadEnv(mode, fileURLToPath(new URL('.', import.meta.url)), '');
 
   // Fail closed: every VITE_* value is copied into browser code, so the key must
   // never be set under that name. This stops dev, preview, and builds alike.
@@ -43,7 +47,10 @@ export default defineConfig(({ command, mode }) => {
     server: {
       proxy: upstream
         ? {
-            '/api/feedingLogs': {
+            // Exactly this path, plus a query string. A plain '/api/feedingLogs'
+            // key is a prefix match: /api/feedingLogs/../../x would be forwarded,
+            // with the key, to wherever it normalizes on the API host.
+            '^/api/feedingLogs(?:\\?|$)': {
               target: upstream.origin,
               // API Gateway routes by hostname, so send its hostname, not localhost.
               changeOrigin: true,

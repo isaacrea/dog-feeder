@@ -18,7 +18,7 @@ HTTPS POST (device or curl)
   -> Lambda       (formats a message per new record)
   -> SNS          (fans out to up to 5 email subscribers)
 
-HTTPS GET (dashboard or curl)
+HTTPS GET (the dashboard's proxy, or curl)
   -> API Gateway  (same resource; its own dashboard key and usage plan)
   -> Lambda       (read-only: scans the table, returns the last 7/30/90 days)
 ```
@@ -142,7 +142,7 @@ The stack creates two keys, one per client, each with its own usage plan:
 | Key | Output | Used by |
 |---|---|---|
 | `luna-feeder-device-key-iac` | `ApiKeyId` | The ESP32 (`POST`); goes in the firmware's `config.h` |
-| `luna-feeder-dashboard-key-iac` | `DashboardApiKeyId` | The dashboard (`GET`); goes in `dashboard/.env.local` as `VITE_API_KEY` |
+| `luna-feeder-dashboard-key-iac` | `DashboardApiKeyId` | The dashboard's proxy (`GET`); goes in `dashboard/.env.local` as `FEEDER_API_KEY`, and in the Caddy config on the server. Never as `VITE_API_KEY`: Vite copies `VITE_` values into the page |
 
 The stack outputs are key **IDs**; the secret values are deliberately never
 exposed through CloudFormation. Retrieve a value either way:
@@ -309,7 +309,7 @@ Expected: `200` with JSON holding `days`, `from`, `count`, `latest`, and
 |---|---|---|
 | Stack `CREATE_FAILED`, "... already exists" | A copy of this stack (or leftovers from a prior attempt) exists in this region | Delete the old stack/resources, or use a different region. One deployment per region |
 | Stack `ROLLBACK_COMPLETE` | Any create failure; the stack rolled back | Read Events bottom-up, find the first `CREATE_FAILED`, read its full Status reason. A `ROLLBACK_COMPLETE` stack cannot be updated — delete it and create again |
-| `403 {"message":"Forbidden"}` | Missing or wrong `x-api-key` header | Re-check section 7: the key's **value**, not its ID; the header name exactly `x-api-key` |
+| `403 {"message":"Forbidden"}`, or the dashboard banner "API Gateway rejected the proxy's key" | Missing or wrong `x-api-key` header (for the dashboard, the proxy's `FEEDER_API_KEY`) | Re-check section 7: the key's **value**, not its ID; the header name exactly `x-api-key`. Restart the proxy after editing its key |
 | `403 {"message":"Missing Authentication Token"}` | Wrong URL (path or stage typo) or an unsupported method | Use the `InvokeUrl` output verbatim: POST for the device, GET with `?days=` for the dashboard |
 | `429 Too Many Requests` | Throttle or daily quota exceeded | Wait (throttle) or until the next day / raise `QuotaLimit` (quota) |
 | `400 Missing required fields` | Body lacks `person` or `timestamp`, or malformed JSON header | Compare against the baseline request |
@@ -317,7 +317,10 @@ Expected: `200` with JSON holding `days`, `from`, `count`, `latest`, and
 | `500` response to a POST | Ingest handler error | Read the newest stream in the ingest log group |
 | `500` response to a GET, with a `requestId` | Read handler error | Search `/aws/lambda/luna-feeder-read-iac` for that request ID; an `AccessDeniedException` there means the role lost `dynamodb:Scan` |
 | `500 {"message": "Internal server error"}`, no read log entry | API Gateway could not invoke the read Lambda | Check the function's resource-based policy (Lambda -> `luna-feeder-read-iac` -> Configuration -> Permissions) |
-| Dashboard banner: "Could not reach the API (network or CORS)" | Wrong `VITE_API_URL`, offline, or a `CorsAllowOrigin` that doesn't match where the dashboard runs | Browser dev tools -> Network -> the failing `feedingLogs` row; the Console tab gives the exact reason. Keep `CorsAllowOrigin` at `*` to use the dashboard from a phone |
+| Dashboard banner: "The API proxy is not configured" | `FEEDER_API_URL` or `FEEDER_API_KEY` missing, so `/api/feedingLogs` fell through to the page itself. `npm run dev` prints a `[feeder proxy]` warning at startup | Set both in `dashboard/.env.local` and restart. On the server, check the Caddy route for `/api/feedingLogs` |
+| Dashboard banner: "The proxy could not reach API Gateway (HTTP 502)" | Wrong host in `FEEDER_API_URL`, or the machine running the proxy is offline | The `npm run dev` terminal (or Caddy's log) shows the proxy error. `FEEDER_API_URL` must be the `InvokeUrl` output |
+| Dashboard banner: "Could not reach the dashboard's server" | The dev server, preview server, or Caddy stopped, or the phone left the Wi-Fi or Tailscale | Restart the server; check the phone's connection. The dashboard makes no cross-origin calls, so CORS is never the cause |
+| `npm run dev` or `npm run build` stops with "VITE_API_KEY is set" | An `.env.local` from before the proxy | Delete `VITE_API_KEY` (and any full-URL `VITE_API_URL`) from `dashboard/.env.local`; the key goes in `FEEDER_API_KEY` |
 | No email, everything else works | **Subscription not confirmed** (most likely), or spam folder | Section 5. Then check the notifier log group for the invocation; then SNS -> Subscriptions status |
 | Email arrives without battery line | `batteryVoltage` absent from the request | Expected: the line is omitted when no reading is sent |
 | No second email on a repeated request | Duplicate `eventId` | Expected: idempotent writes produce no stream event (test #2) |

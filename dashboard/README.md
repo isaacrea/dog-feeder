@@ -19,14 +19,25 @@ npm run dev                  # http://localhost:5173
 not included in production builds. Try `VITE_MOCK_SCENARIO=empty`, `error`,
 or `slow` in `.env.local` to see each state.
 
-**Live data**: in `.env.local`, set `VITE_DATA_SOURCE=live`, `VITE_API_URL`
+**Live data**: in `.env.local`, set `VITE_DATA_SOURCE=live`, `FEEDER_API_URL`
 (the stack's `InvokeUrl` output), and `FEEDER_API_KEY` (the dashboard key's
-value). Restart `npm run dev` after any edit.
+value). Restart `npm run dev` after any edit. The page only ever calls
+`GET /api/feedingLogs` on its own origin; `vite.config.js` forwards that one
+request to `FEEDER_API_URL` and adds the key, so the key never reaches the
+browser. Writes (POST, PUT, DELETE) get a 404 and are never forwarded. Leave
+`VITE_API_URL` unset, and never put the key in a `VITE_` variable: Vite
+copies those into the page, and the config refuses to start if `VITE_API_KEY`
+is set.
 
 ```bash
-npm test          # analytics, mock generator, Central-time, and theme contrast tests
-npm run build     # production build in dist/ (always live data)
+npm test          # API client, analytics, mock generator, Central-time, and theme contrast tests
+npm run build     # production build in dist/ (always live data; no key inside)
+npm run preview   # serves dist/ at http://localhost:4173 through the same proxy
 ```
+
+`npm run preview` is how to test a production build with live data before
+putting it behind Caddy, which plays the proxy's role on the server (same
+path and rewrite, key set server-side, GET only).
 
 ## Color themes
 
@@ -50,7 +61,9 @@ focus-ring contrast whenever a color changes.
 |---|---|
 | `src/analytics.js` | Every number on the page, as pure functions (unit-tested) |
 | `src/time.js` | Central-time date math (DST-safe) and formatting |
-| `src/api.js` | The one GET, with error messages that say where to look |
+| `vite.config.js` | Dev/preview proxy: `GET /api/feedingLogs` to API Gateway, key added server-side |
+| `src/config.js` | Settings from `.env.local`; each `VITE_` variable read by name, so a build inlines only those |
+| `src/api.js` | The one GET, to the same-origin proxy, with error messages that say where to look |
 | `src/mock.js` | Dev-only mock data that follows the firmware's rules |
 | `src/sections/` | One renderer per card |
 | `src/charts.js`, `src/ui.js` | uPlot glue, DOM helpers, tooltip, section states |
