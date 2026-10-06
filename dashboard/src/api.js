@@ -23,7 +23,7 @@ function describe(status, body) {
   }
   if (status === 403) {
     return ['The API rejected the key (403 Forbidden).',
-      'VITE_API_KEY must be the dashboard key\'s value (API Gateway -> API keys -> luna-feeder-dashboard-key-iac -> Show), not its ID. Restart npm run dev after editing .env.local.'];
+      'FEEDER_API_KEY must be the dashboard key\'s value (API Gateway -> API keys -> luna-feeder-dashboard-key-iac -> Show), not its ID. Restart npm run dev after editing .env.local.'];
   }
   if (status === 429) {
     return ['Too many requests (429).',
@@ -41,14 +41,15 @@ function describe(status, body) {
   return [`Unexpected response (HTTP ${status}).`, 'Open dev tools -> Network and inspect the feedingLogs request.'];
 }
 
-export async function fetchFeedings({ apiUrl, apiKey, days = 90 }) {
-  const url = new URL(apiUrl);
+export async function fetchFeedings({ apiUrl, days = 90, base = globalThis.location?.href }) {
+  const url = new URL(apiUrl, base); // same-origin path, resolved against the page
   url.searchParams.set('days', String(days));
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
   let res;
   try {
-    res = await fetch(url, { headers: { 'x-api-key': apiKey }, signal: ctrl.signal, cache: 'no-store' });
+    // No x-api-key: the proxy adds it, and a plain GET skips the CORS preflight.
+    res = await fetch(url, { signal: ctrl.signal, cache: 'no-store' });
   } catch {
     if (ctrl.signal.aborted) {
       throw new ApiError(`The API did not answer within ${TIMEOUT_MS / 1000} seconds.`, {

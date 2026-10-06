@@ -20,7 +20,7 @@ not included in production builds. Try `VITE_MOCK_SCENARIO=empty`, `error`,
 or `slow` in `.env.local` to see each state.
 
 **Live data**: in `.env.local`, set `VITE_DATA_SOURCE=live`, `VITE_API_URL`
-(the stack's `InvokeUrl` output), and `VITE_API_KEY` (the dashboard key's
+(the stack's `InvokeUrl` output), and `FEEDER_API_KEY` (the dashboard key's
 value). Restart `npm run dev` after any edit.
 
 ```bash

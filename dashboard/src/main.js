@@ -62,7 +62,7 @@ async function load() {
       hint: 'Copy dashboard/.env.example to dashboard/.env.local, fill in the values, and restart npm run dev.',
     });
   }
-  return fetchFeedings({ apiUrl: config.apiUrl, apiKey: config.apiKey });
+  return fetchFeedings({ apiUrl: config.apiUrl });
 }
 
 async function refresh() {
