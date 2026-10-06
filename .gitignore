@@ -71,6 +71,9 @@ Testing/
 # Dashboard (Node / Vite)
 node_modules/
 dashboard/dist/
-# Local config holds the API URL and key: never commit it.
-.env.local
-.env.*.local
+# Env files can hold the proxy's API key (FEEDER_API_KEY), and Vite reads
+# .env and .env.[mode] as well as the .local ones: never commit any of them.
+# Only the placeholder example is tracked.
+.env
+.env.*
+!.env.example

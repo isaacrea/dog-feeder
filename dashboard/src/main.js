@@ -59,7 +59,7 @@ async function load() {
   const problem = liveConfigProblem();
   if (problem) {
     throw new ApiError(problem, {
-      hint: 'Copy dashboard/.env.example to dashboard/.env.local, fill in the values, and restart npm run dev.',
+      hint: 'VITE_ values are fixed when npm run dev starts or npm run build runs: restart or rebuild after editing dashboard/.env.local.',
     });
   }
   return fetchFeedings({ apiUrl: config.apiUrl });

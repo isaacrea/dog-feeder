@@ -31,12 +31,13 @@ The device is the source of truth; the cloud is a visibility layer. All feeding 
 
 The notification path is driven off the DynamoDB stream and is independent of ingest, a notification failure cannot affect recording.
 
-The cloud side, including the read path added for the dashboard. Each Lambda has its own role, and each client its own API key:
+The cloud side, including the read path added for the dashboard. Each Lambda has its own role, and each client its own API key; the dashboard's is held by a proxy, never by the browser:
 
 ```mermaid
 flowchart LR
   device["ESP32 feeder"] -- "POST /feedingLogs<br/>device key" --> api["API Gateway<br/>/feedingLogs"]
-  dash["Dashboard<br/>(runs locally)"] -- "GET /feedingLogs?days=90<br/>dashboard key" --> api
+  dash["Dashboard<br/>(browser)"] -- "GET /api/feedingLogs?days=90<br/>same origin, no key" --> proxy["Proxy: Vite locally,<br/>Caddy on the server<br/>GET only"]
+  proxy -- "GET /feedingLogs?days=90<br/>dashboard key" --> api
   api -- POST --> ingest["Ingest Lambda<br/>PutItem only"]
   api -- GET --> read["Read Lambda<br/>Scan only"]
   ingest --> table[("DynamoDB<br/>DogFeedingLogs_IAC")]
@@ -139,29 +140,29 @@ cp .env.example .env.local   # gitignored
 npm run dev                  # http://localhost:5173
 ```
 
-It starts on **mock data**: 90+ days generated in the browser that follow the firmware's rules (meal labels, overrides, a lost clock, a deleted record, a battery recharge). Nothing is sent anywhere, and the mock code is stripped from production builds. For **live data**, set `VITE_DATA_SOURCE=live`, `VITE_API_URL` (the `InvokeUrl` output), and `VITE_API_KEY` (the dashboard key's value, see [DEPLOYMENT.md §7](DEPLOYMENT.md#7-retrieve-the-api-key-value)) in `.env.local`, then restart. To view it from a phone on the same Wi-Fi, run `npm run dev -- --host`, on trusted networks only.
+It starts on **mock data**: 90+ days generated in the browser that follow the firmware's rules (meal labels, overrides, a lost clock, a deleted record, a battery recharge). Nothing is sent anywhere, and the mock code is stripped from production builds. For **live data**, set `VITE_DATA_SOURCE=live`, `FEEDER_API_URL` (the `InvokeUrl` output), and `FEEDER_API_KEY` (the dashboard key's value, see [DEPLOYMENT.md §7](DEPLOYMENT.md#7-retrieve-the-api-key-value)) in `.env.local`, then restart. To test the production build the same way, run `npm run build` and then `npm run preview` (http://localhost:4173): it serves `dist/` through the same proxy. To view it from a phone on the same Wi-Fi, run `npm run dev -- --host`, on trusted networks only.
 
 Tests, internals, and themes: [dashboard/README.md](dashboard/README.md).
 
-**It runs locally by design.** A browser has to send its API key, so a hosted page would hand the key to anyone who opens dev tools. API Gateway keys also aren't method-scoped, so the dashboard key could POST feedings too. Hosting would first need a real login; the plan for that is Cognito, with S3 and CloudFront for the site.
+**The browser never holds the key.** API Gateway keys aren't method-scoped, so the dashboard key could POST feedings too, and a page that carried it would hand it to anyone who opens dev tools. Instead the page calls `GET /api/feedingLogs` on its own origin, and a proxy adds the key server-side: `dashboard/vite.config.js` for `npm run dev` and `npm run preview`, and in production Caddy on the home server, with the same path, rewrite, and GET-only rule (its config lives in a separate repo). Only that GET is forwarded: a POST gets a 404 and never reaches AWS. There is no login: anyone who can open the page (home Wi-Fi, Tailscale) can read the feeding history, but not write to it or see the key.
 
 ## Infrastructure as code
 
 - Single CloudFormation template (`cloud/infra/`) defines the table, all three Lambdas, IAM roles, API Gateway (device and dashboard keys, each with its own usage plan, plus the CORS preflight and error responses), SNS topic and subscriptions, and stream wiring. Deploys to any region or account unchanged; deleting the stack removes everything it created.
 - CodePipeline (V2) deploys on merges to `main` that touch `cloud/infra/`, via a GitHub App connection. The pipeline uses a CloudFormation deploy role scoped to this stack's resources, and `main` is branch-protected. The console is read-only by convention; manual stack changes are reverted on the next deploy.
 - The deploy role's policy names each Lambda function and log group by ARN, so adding a Lambda means widening that policy before merging (the read Lambda did). A change set preview can't catch a missing grant: it runs as you, not as the deploy role.
-- Only the backend deploys. `dashboard/` changes don't trigger the pipeline, and the dashboard runs locally (see [Dashboard](#dashboard)).
+- Only the backend deploys. `dashboard/` changes don't trigger the pipeline; the dashboard is served separately, by Vite locally or Caddy on the home server (see [Dashboard](#dashboard)).
 - Lambda code is inline in the template, with `cloud/lambda/` as the source of truth. For the read Lambda, `node --test cloud/lambda/test/readFeedingLogs.test.js` fails if the inline copy drifts from the source.
-- The backend was originally hand-built in the console and converted to this template. The conversion surfaced two bugs, both fixed: a custom integration that mapped every response to HTTP 200 (replaced with proxy integration, so real status codes reach the device), and an unused OPTIONS method left over from the console's CORS setup (removed). An OPTIONS method has since returned, this time doing real work as the dashboard's CORS preflight. Historical records were migrated with a disposable one-off stack that was deleted after the copy.
+- The backend was originally hand-built in the console and converted to this template. The conversion surfaced two bugs, both fixed: a custom integration that mapped every response to HTTP 200 (replaced with proxy integration, so real status codes reach the device), and an unused OPTIONS method left over from the console's CORS setup (removed). An OPTIONS method has since returned as the CORS preflight for the dashboard's original direct calls; the dashboard now calls a same-origin proxy, so it no longer needs it. Historical records were migrated with a disposable one-off stack that was deleted after the copy.
 
 ## Security
 
 - The device sits behind home NAT and makes outbound connections only; the API endpoint is the sole exposed surface.
 - API keys are rate limiting and blast-radius control, not authentication. The device and the dashboard each have their own key and usage plan; the dashboard's is tighter (1 request/second, burst 5, 500 a day), so a leaked dashboard key can't do much or cost much.
-- API Gateway keys aren't method-scoped: any key on the stage can call every key-required method. That is why the dashboard runs locally rather than hosted (see [Dashboard](#dashboard)).
+- API Gateway keys aren't method-scoped: any key on the stage can call every key-required method. That is why the dashboard key stays server-side, in a proxy that forwards GET only (see [Dashboard](#dashboard)).
 - The API is one resource with three methods: POST (device), GET (dashboard), and an OPTIONS preflight that API Gateway answers itself, with no Lambda invoked.
-- CORS allows any origin (the `CorsAllowOrigin` parameter, `*`) so the dashboard also works from a phone on the home network. CORS is enforced only by browsers, so it isn't what protects the API; the key is.
-- WiFi and API credentials live in a gitignored `config.h`, and the dashboard's API URL and key in a gitignored `dashboard/.env.local`. The notification email is supplied as a pipeline parameter override, not committed.
+- CORS still allows any origin (the `CorsAllowOrigin` parameter, `*`), but the dashboard no longer depends on it: the browser only talks to the proxy on its own origin. CORS is enforced only by browsers, so it isn't what protects the API; the key is.
+- WiFi and API credentials live in a gitignored `config.h`, and the dashboard proxy's API URL and key in a gitignored `dashboard/.env.local`, as `FEEDER_API_URL` and `FEEDER_API_KEY`. Never as `VITE_` variables: Vite copies those into the page, and `vite.config.js` refuses to start if `VITE_API_KEY` is set. The notification email is supplied as a pipeline parameter override, not committed.
 
 Each Lambda has its own role. No managed policies; every grant is explicit:
 
