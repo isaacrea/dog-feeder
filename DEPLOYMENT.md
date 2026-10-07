@@ -142,7 +142,7 @@ The stack creates two keys, one per client, each with its own usage plan:
 | Key | Output | Used by |
 |---|---|---|
 | `luna-feeder-device-key-iac` | `ApiKeyId` | The ESP32 (`POST`); goes in the firmware's `config.h` |
-| `luna-feeder-dashboard-key-iac` | `DashboardApiKeyId` | The dashboard's proxy (`GET`); goes in `dashboard/.env.local` as `FEEDER_API_KEY`, and in the Caddy config on the server. Never as `VITE_API_KEY`: Vite copies `VITE_` values into the page |
+| `luna-feeder-dashboard-key-iac-2` | `DashboardApiKeyId` | The dashboard's proxy (`GET`); goes in `dashboard/.env.local` as `FEEDER_API_KEY`, and in the Caddy config on the server. Never as `VITE_API_KEY`: Vite copies `VITE_` values into the page |
 
 The stack outputs are key **IDs**; the secret values are deliberately never
 exposed through CloudFormation. Retrieve a value either way:
@@ -161,6 +161,16 @@ exposed through CloudFormation. Retrieve a value either way:
   the CLI preinstalled and already authenticated as you. Open CloudShell
   **in the same region as the stack** — the command fails with a
   not-found error if CloudShell is pointed at a different region.
+
+**Rotating a key.** API Gateway can't change an existing key's value. To
+rotate, change the key's `Name` in the template (the dashboard key ends in
+a counter: `-2`, then `-3`) and deploy. `Name` can only be set at creation,
+so CloudFormation creates a new key with a new value, moves the usage plan
+to it, and deletes the old key once the update succeeds. If the update
+fails, it rolls back and the old key keeps working. Afterwards, fetch the
+new value with the command above (the `DashboardApiKeyId` output changes
+too) and update every client that holds it. Clients still using the old
+value get `403 {"message":"Forbidden"}` until then.
 
 ## 8. Test the API
 

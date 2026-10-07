@@ -158,7 +158,7 @@ Tests, internals, and themes: [dashboard/README.md](dashboard/README.md).
 ## Security
 
 - The device sits behind home NAT and makes outbound connections only; the API endpoint is the sole exposed surface.
-- API keys are rate limiting and blast-radius control, not authentication. The device and the dashboard each have their own key and usage plan; the dashboard's is tighter (1 request/second, burst 5, 500 a day), so a leaked dashboard key can't do much or cost much.
+- API keys are rate limiting and blast-radius control, not authentication. The device and the dashboard each have their own key and usage plan; the dashboard's is tighter (1 request/second, burst 5, 500 a day), so a leaked dashboard key can't do much or cost much. A key is rotated by renaming it in the template ([DEPLOYMENT.md §7](DEPLOYMENT.md#7-retrieve-the-api-key-value)); the dashboard key was rotated once it moved behind the proxy, since the first one had been served to browsers.
 - API Gateway keys aren't method-scoped: any key on the stage can call every key-required method. That is why the dashboard key stays server-side, in a proxy that forwards GET only (see [Dashboard](#dashboard)).
 - The API is one resource with three methods: POST (device), GET (dashboard), and an OPTIONS preflight that API Gateway answers itself, with no Lambda invoked.
 - CORS still allows any origin (the `CorsAllowOrigin` parameter, `*`), but the dashboard no longer depends on it: the browser only talks to the proxy on its own origin. CORS is enforced only by browsers, so it isn't what protects the API; the key is.
