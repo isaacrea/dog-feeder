@@ -34,7 +34,6 @@ Module._load = function (request, ...rest) {
 };
 
 process.env.TABLE_NAME = 'TestTable';
-process.env.CORS_ALLOW_ORIGIN = 'http://localhost:5173';
 process.env.DASHBOARD_API_KEY_ID = 'dashboard-key-id';
 delete process.env.DISPLAY_TIMEZONE;   // exercise the America/Chicago default
 
@@ -190,20 +189,20 @@ test('handler follows LastEvaluatedKey across pages', async () => {
   assert.deepEqual(body.items.map((r) => r.id), ['p2', 'p1']);
 });
 
-test('handler: CORS and no-store headers on success', async () => {
+test('handler: no-store and no CORS header on success', async () => {
   reset();
   const res = await handler(get(null), {});
   assert.equal(res.statusCode, 200);
-  assert.equal(res.headers['Access-Control-Allow-Origin'], 'http://localhost:5173');
   assert.equal(res.headers['Cache-Control'], 'no-store');
+  // Only the dashboard's same-origin proxy calls this API, so no CORS.
+  assert.equal(res.headers['Access-Control-Allow-Origin'], undefined);
   assert.equal(JSON.parse(res.body).days, 30);
 });
 
-test('handler: invalid days is a 400 with CORS header and no Scan', async () => {
+test('handler: invalid days is a 400 and no Scan', async () => {
   reset();
   const res = await handler(get({ days: '14' }), {});
   assert.equal(res.statusCode, 400);
-  assert.equal(res.headers['Access-Control-Allow-Origin'], 'http://localhost:5173');
   assert.match(JSON.parse(res.body).message, /7, 30, 90/);
   assert.equal(sent.length, 0);
 });
@@ -228,7 +227,6 @@ test('handler: the device key gets a 403 before any Scan', async (t) => {
   const res = await handler(get({ days: '7' }, 'device-key-id'), {});
   assert.equal(res.statusCode, 403);
   assert.equal(JSON.parse(res.body).message, 'This API key cannot read feedings.');
-  assert.equal(res.headers['Access-Control-Allow-Origin'], 'http://localhost:5173');
   assert.equal(sent.length, 0);
   assert.match(warn.mock.calls[0].arguments[0], /device-key-id/);
 });

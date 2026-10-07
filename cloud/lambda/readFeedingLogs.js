@@ -10,7 +10,6 @@ const { DynamoDBDocumentClient, ScanCommand } = require('@aws-sdk/lib-dynamodb')
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TABLE = process.env.TABLE_NAME;
 const TZ = process.env.DISPLAY_TIMEZONE || 'America/Chicago';
-const ALLOW_ORIGIN = process.env.CORS_ALLOW_ORIGIN || '*';
 const DASHBOARD_KEY_ID = process.env.DASHBOARD_API_KEY_ID;
 
 const ALLOWED_DAYS = [7, 30, 90];
@@ -165,7 +164,6 @@ const resp = (statusCode, obj) => ({
   headers: {
     'Content-Type': 'application/json',
     'Cache-Control': 'no-store',
-    'Access-Control-Allow-Origin': ALLOW_ORIGIN,
   },
   body: JSON.stringify(obj),
 });

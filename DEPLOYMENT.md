@@ -87,7 +87,6 @@ actual cause; everything above it is rollback fallout. See section 11.
 | `DashboardThrottleRateLimit` | Dashboard key: steady-state requests/second ceiling | No (default `1`) | `1` | Number |
 | `DashboardThrottleBurstLimit` | Dashboard key: burst ceiling; must be >= its rate | No (default `5`) | `5` | Number |
 | `DashboardQuotaLimit` | Dashboard key: max requests per day | No (default `500`) | `500` | Number |
-| `CorsAllowOrigin` | `Access-Control-Allow-Origin` on the read API | No (default `*`) | `*` | `*`, or one origin such as `https://example.com` with no trailing slash or path |
 | `BatteryWarnVolts` | Battery "low" alert threshold | No (default `3.60`) | `3.60` | 3.0–4.2 |
 | `BatteryCritVolts` | Battery "critical" alert threshold | No (default `3.45`) | `3.45` | 3.0–4.2; keep below warn |
 
@@ -264,8 +263,8 @@ Expected: `200` with JSON holding `days`, `from`, `count`, `latest`, and
 | R1 | `?days=7`, `30`, or `90` | `200`, records from that many Central calendar days, oldest first |
 | R2 | no `?days` | `200`, `"days":30` |
 | R3 | `?days=14` | `400` `{"message":"days must be one of 7, 30, 90."}` |
-| R4 | no `x-api-key` header | `403` `{"message":"Forbidden"}`, with an `access-control-allow-origin` header (so browsers show the real status) |
-| R5 | `curl -i -X OPTIONS "$URL" -H "Origin: http://localhost:5173" -H "Access-Control-Request-Method: GET"` | `200` with `access-control-allow-methods: GET,OPTIONS` (the CORS preflight, answered by API Gateway alone) |
+| R4 | no `x-api-key` header | `403` `{"message":"Forbidden"}` |
+| R5 | `curl -i -X OPTIONS "$URL"` | `403` `{"message":"Missing Authentication Token"}`: there is no OPTIONS method. No browser calls the API cross-origin (the dashboard uses a same-origin proxy), so it has no CORS preflight and sends no `access-control-*` headers |
 | R6 | the device key as `x-api-key` | `403` `{"message":"This API key cannot read feedings."}`: the read Lambda accepts only the dashboard key |
 
 ## 9. Verify end to end
