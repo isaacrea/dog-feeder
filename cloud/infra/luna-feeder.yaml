@@ -570,20 +570,20 @@ Resources:
   # resources last (cleanup phase), after any new deployment has been taken,
   # so a rename in the same update would snapshot them again. Remove them
   # first, then rename this in a second change.
-  FeedingApiDeployment20260929:
+  FeedingApiDeployment20261007:
     Type: AWS::ApiGateway::Deployment
     DependsOn:
       - FeedingLogsPostMethod
       - FeedingLogsGetMethod
     Properties:
       RestApiId: !Ref FeedingApi
-      Description: Adds GET /feedingLogs for the dashboard, with CORS
+      Description: GET and POST /feedingLogs only; removes the CORS preflight and CORS error headers
 
   FeedingApiStage:
     Type: AWS::ApiGateway::Stage
     Properties:
       RestApiId: !Ref FeedingApi
-      DeploymentId: !Ref FeedingApiDeployment20260929
+      DeploymentId: !Ref FeedingApiDeployment20261007
       StageName: !Ref StageName
 
   # Value omitted so API Gateway generates it; keeps the credential out of
