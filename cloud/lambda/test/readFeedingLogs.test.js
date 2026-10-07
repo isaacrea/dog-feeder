@@ -6,9 +6,9 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
 const path = require('node:path');
 const Module = require('node:module');
+const { inlineCode, sourceAsInlined } = require('./inlineCode');
 
 let pages = [];
 let sent = [];
@@ -35,6 +35,7 @@ Module._load = function (request, ...rest) {
 
 process.env.TABLE_NAME = 'TestTable';
 process.env.CORS_ALLOW_ORIGIN = 'http://localhost:5173';
+process.env.DASHBOARD_API_KEY_ID = 'dashboard-key-id';
 delete process.env.DISPLAY_TIMEZONE;   // exercise the America/Chicago default
 
 const SRC = path.join(__dirname, '..', 'readFeedingLogs.js');
@@ -46,6 +47,12 @@ const HOUR = 3600e3;
 const DAY = 24 * HOUR;
 
 const reset = () => { pages = []; sent = []; failWith = null; };
+
+// A GET as API Gateway delivers it, from the dashboard's key unless told otherwise.
+const get = (query, apiKeyId = 'dashboard-key-id') => ({
+  queryStringParameters: query,
+  requestContext: { identity: { apiKeyId } },
+});
 
 // --- days parameter --------------------------------------------------------
 
@@ -170,7 +177,7 @@ test('handler follows LastEvaluatedKey across pages', async () => {
     { Items: [{ id: 'p1', timestamp: iso(now - HOUR) }], LastEvaluatedKey: { id: 'p1' } },
     { Items: [{ id: 'p2', timestamp: iso(now - 2 * HOUR) }] },
   ];
-  const res = await handler({ queryStringParameters: { days: '7' } }, { awsRequestId: 'r1' });
+  const res = await handler(get({ days: '7' }), { awsRequestId: 'r1' });
   assert.equal(res.statusCode, 200);
   assert.equal(sent.length, 2);
   assert.equal(sent[0].ExclusiveStartKey, undefined);
@@ -185,7 +192,7 @@ test('handler follows LastEvaluatedKey across pages', async () => {
 
 test('handler: CORS and no-store headers on success', async () => {
   reset();
-  const res = await handler({ queryStringParameters: null }, {});
+  const res = await handler(get(null), {});
   assert.equal(res.statusCode, 200);
   assert.equal(res.headers['Access-Control-Allow-Origin'], 'http://localhost:5173');
   assert.equal(res.headers['Cache-Control'], 'no-store');
@@ -194,7 +201,7 @@ test('handler: CORS and no-store headers on success', async () => {
 
 test('handler: invalid days is a 400 with CORS header and no Scan', async () => {
   reset();
-  const res = await handler({ queryStringParameters: { days: '14' } }, {});
+  const res = await handler(get({ days: '14' }), {});
   assert.equal(res.statusCode, 400);
   assert.equal(res.headers['Access-Control-Allow-Origin'], 'http://localhost:5173');
   assert.match(JSON.parse(res.body).message, /7, 30, 90/);
@@ -206,7 +213,7 @@ test('handler: DynamoDB failure is a generic 500 carrying the request ID', async
   const errors = t.mock.method(console, 'error', () => {});
   failWith = Object.assign(new Error('User is not authorized to perform: dynamodb:Scan'),
                            { name: 'AccessDeniedException' });
-  const res = await handler({ queryStringParameters: { days: '7' } }, { awsRequestId: 'req-123' });
+  const res = await handler(get({ days: '7' }), { awsRequestId: 'req-123' });
   assert.equal(res.statusCode, 500);
   const body = JSON.parse(res.body);
   assert.equal(body.requestId, 'req-123');
@@ -215,22 +222,27 @@ test('handler: DynamoDB failure is a generic 500 carrying the request ID', async
   reset();
 });
 
+test('handler: the device key gets a 403 before any Scan', async (t) => {
+  reset();
+  const warn = t.mock.method(console, 'warn', () => {});
+  const res = await handler(get({ days: '7' }, 'device-key-id'), {});
+  assert.equal(res.statusCode, 403);
+  assert.equal(JSON.parse(res.body).message, 'This API key cannot read feedings.');
+  assert.equal(res.headers['Access-Control-Allow-Origin'], 'http://localhost:5173');
+  assert.equal(sent.length, 0);
+  assert.match(warn.mock.calls[0].arguments[0], /device-key-id/);
+});
+
+test('handler: a request with no key ID gets a 403', async (t) => {
+  reset();
+  t.mock.method(console, 'warn', () => {});
+  const res = await handler({ queryStringParameters: { days: '7' } }, {});
+  assert.equal(res.statusCode, 403);
+  assert.equal(sent.length, 0);
+});
+
 // --- template drift --------------------------------------------------------
 
 test('template inline code matches this source file', () => {
-  const yaml = fs.readFileSync(path.join(__dirname, '..', '..', 'infra', 'luna-feeder.yaml'), 'utf8');
-  const lines = yaml.split('\n');
-  const fn = lines.findIndex((l) => l.includes('FunctionName: luna-feeder-read-iac'));
-  assert.ok(fn >= 0, 'ReadFunction not found in template');
-  const zip = lines.findIndex((l, i) => i > fn && l.trim() === 'ZipFile: |');
-  const indent = ' '.repeat(lines[zip].indexOf('ZipFile') + 2);
-  const inline = [];
-  for (const l of lines.slice(zip + 1)) {
-    if (l.trim() === '') { inline.push(''); continue; }
-    if (!l.startsWith(indent)) break;
-    inline.push(l.slice(indent.length));
-  }
-  const source = fs.readFileSync(SRC, 'utf8').replace(
-    /^\/\/\n\/\/ Deployed inline via[^\n]*\n\/\/ This file is the source of truth[^\n]*\n/m, '');
-  assert.equal(inline.join('\n').trimEnd(), source.trimEnd());
+  assert.equal(inlineCode('luna-feeder-read-iac'), sourceAsInlined(SRC));
 });

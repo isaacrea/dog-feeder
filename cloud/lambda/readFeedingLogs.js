@@ -11,6 +11,7 @@ const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TABLE = process.env.TABLE_NAME;
 const TZ = process.env.DISPLAY_TIMEZONE || 'America/Chicago';
 const ALLOW_ORIGIN = process.env.CORS_ALLOW_ORIGIN || '*';
+const DASHBOARD_KEY_ID = process.env.DASHBOARD_API_KEY_ID;
 
 const ALLOWED_DAYS = [7, 30, 90];
 const DEFAULT_DAYS = 30;
@@ -135,6 +136,14 @@ const scanAll = async () => {
 };
 
 exports.handler = async (event, context) => {
+  // API keys aren't method-scoped: API Gateway accepts any key on the stage
+  // here, the device's included. Only the dashboard's key may read. Compare
+  // the key's ID; never log identity.apiKey, which is the key itself.
+  const keyId = event?.requestContext?.identity?.apiKeyId;
+  if (!DASHBOARD_KEY_ID || keyId !== DASHBOARD_KEY_ID) {
+    console.warn(JSON.stringify({ rejectedApiKeyId: keyId ?? null }));
+    return resp(403, { message: 'This API key cannot read feedings.' });
+  }
   const days = parseDays(event?.queryStringParameters?.days);
   if (days == null) {
     return resp(400, { message: 'days must be one of ' + ALLOWED_DAYS.join(', ') + '.' });

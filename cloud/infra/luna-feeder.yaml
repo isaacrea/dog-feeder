@@ -179,6 +179,7 @@ Resources:
 
   # Inline code deploys as index.js and runs as CommonJS.
   # Source of truth: cloud/lambda/storeDogFeedingLog.js. Edit there, copy here.
+  # cloud/lambda/test/storeDogFeedingLog.test.js fails if the two drift.
   IngestFunction:
     Type: AWS::Lambda::Function
     # Without this, Lambda auto-creates an unmanaged log group on first invoke.
@@ -193,6 +194,8 @@ Resources:
       Environment:
         Variables:
           TABLE_NAME: !Ref FeedingLogsTable
+          # Only this key may write; Ref on an API key is its ID, not its value.
+          DEVICE_API_KEY_ID: !Ref FeedingApiKey
       Code:
         ZipFile: |
           // Ingest for the Luna Feeder: validates the device payload and
@@ -203,8 +206,18 @@ Resources:
 
           const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
           const TABLE = process.env.TABLE_NAME;
+          const DEVICE_KEY_ID = process.env.DEVICE_API_KEY_ID;
 
           exports.handler = async (event) => {
+            // API keys aren't method-scoped: API Gateway accepts any key on the stage
+            // here, the dashboard's included. Only the device's key may write. Compare
+            // the key's ID; never log identity.apiKey, which is the key itself.
+            const keyId = event?.requestContext?.identity?.apiKeyId;
+            if (!DEVICE_KEY_ID || keyId !== DEVICE_KEY_ID) {
+              console.warn('Rejected write from API key ID:', keyId ?? 'none');
+              return resp(403, { message: 'This API key cannot record feedings.' });
+            }
+
             try {
               const body = typeof event.body === 'string' ? JSON.parse(event.body) : event.body;
 
@@ -228,7 +241,7 @@ Resources:
                 timestamp,                                     // authoritative: server-anchored when possible
                 deviceTimestamp: body.timestamp,               // what the device's clock claimed (audit)
                 timeSource:      ageSec != null ? 'server-anchored' : 'device',
-                meal:            body.meal ?? null,            // "breakfast" | "dinner" | "extra"
+                meal:            body.meal ?? null,            // "breakfast" | "dinner" | "unknown"
                 override:        body.override ?? false,
                 timeConfidence:  body.timeConfidence ?? null,  // "synced" | "drifting" | "unknown"
                 batteryVoltage:  body.batteryVoltage ?? null,
@@ -315,6 +328,9 @@ Resources:
           TABLE_NAME: !Ref FeedingLogsTable
           DISPLAY_TIMEZONE: America/Chicago
           CORS_ALLOW_ORIGIN: !Ref CorsAllowOrigin
+          # Only this key may read. Follows a rotation, since Ref is the
+          # current key's ID.
+          DASHBOARD_API_KEY_ID: !Ref DashboardApiKey
       Code:
         ZipFile: |
           // Read API for the Luna Feeder: returns the feeding records from the last
@@ -327,6 +343,7 @@ Resources:
           const TABLE = process.env.TABLE_NAME;
           const TZ = process.env.DISPLAY_TIMEZONE || 'America/Chicago';
           const ALLOW_ORIGIN = process.env.CORS_ALLOW_ORIGIN || '*';
+          const DASHBOARD_KEY_ID = process.env.DASHBOARD_API_KEY_ID;
 
           const ALLOWED_DAYS = [7, 30, 90];
           const DEFAULT_DAYS = 30;
@@ -451,6 +468,14 @@ Resources:
           };
 
           exports.handler = async (event, context) => {
+            // API keys aren't method-scoped: API Gateway accepts any key on the stage
+            // here, the device's included. Only the dashboard's key may read. Compare
+            // the key's ID; never log identity.apiKey, which is the key itself.
+            const keyId = event?.requestContext?.identity?.apiKeyId;
+            if (!DASHBOARD_KEY_ID || keyId !== DASHBOARD_KEY_ID) {
+              console.warn(JSON.stringify({ rejectedApiKeyId: keyId ?? null }));
+              return resp(403, { message: 'This API key cannot read feedings.' });
+            }
             const days = parseDays(event?.queryStringParameters?.days);
             if (days == null) {
               return resp(400, { message: 'days must be one of ' + ALLOWED_DAYS.join(', ') + '.' });
@@ -655,8 +680,9 @@ Resources:
       UsagePlanId: !Ref FeedingUsagePlan
 
   # API keys are not scoped to methods: any key in a usage plan on this stage
-  # can call every key-required method, so this key can also POST. The key
-  # identifies and throttles the dashboard; it does not authorize it.
+  # can call every key-required method, so API Gateway lets this key POST.
+  # The Lambdas close that gap: ingest accepts only the device key's ID and
+  # read only this key's (DEVICE_API_KEY_ID / DASHBOARD_API_KEY_ID).
   #
   # Rotation: a key's value can't be changed, but Name is create-only, so
   # changing it makes CloudFormation create a new key (new value), move the
