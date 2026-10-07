@@ -41,16 +41,6 @@ Parameters:
     Default: 500
     Description: Maximum dashboard key requests per day.
 
-  # Browsers compare the origin exactly, so a trailing slash or path never
-  # matches. The pattern also keeps quotes out of the static header mappings
-  # built from this value.
-  CorsAllowOrigin:
-    Type: String
-    Default: '*'
-    AllowedPattern: '^(\*|https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?)$'
-    ConstraintDescription: Must be * or one origin such as https://example.com, with no trailing slash or path.
-    Description: Access-Control-Allow-Origin for the read API. '*' suits local development; set the dashboard's hosted origin once it exists.
-
   # Each non-empty address gets its own SNS subscription and must complete a
   # one-time confirmation click before receiving anything. Email 1 is
   # required; 2-5 are optional. The optional pattern's ^$ alternative permits
@@ -327,7 +317,6 @@ Resources:
         Variables:
           TABLE_NAME: !Ref FeedingLogsTable
           DISPLAY_TIMEZONE: America/Chicago
-          CORS_ALLOW_ORIGIN: !Ref CorsAllowOrigin
           # Only this key may read. Follows a rotation, since Ref is the
           # current key's ID.
           DASHBOARD_API_KEY_ID: !Ref DashboardApiKey
@@ -342,7 +331,6 @@ Resources:
           const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
           const TABLE = process.env.TABLE_NAME;
           const TZ = process.env.DISPLAY_TIMEZONE || 'America/Chicago';
-          const ALLOW_ORIGIN = process.env.CORS_ALLOW_ORIGIN || '*';
           const DASHBOARD_KEY_ID = process.env.DASHBOARD_API_KEY_ID;
 
           const ALLOWED_DAYS = [7, 30, 90];
@@ -497,7 +485,6 @@ Resources:
             headers: {
               'Content-Type': 'application/json',
               'Cache-Control': 'no-store',
-              'Access-Control-Allow-Origin': ALLOW_ORIGIN,
             },
             body: JSON.stringify(obj),
           });
@@ -575,68 +562,19 @@ Resources:
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${FeedingApi}/*/GET/feedingLogs'
 
-  # CORS preflight. A browser sends it before any cross-origin request that
-  # carries x-api-key, and never attaches the key to the preflight itself, so
-  # it cannot require one. MOCK: API Gateway answers directly; no Lambda runs.
-  # Allows GET only, so browser pages cannot POST feedings.
-  FeedingLogsOptionsMethod:
-    Type: AWS::ApiGateway::Method
-    Properties:
-      RestApiId: !Ref FeedingApi
-      ResourceId: !Ref FeedingLogsResource
-      HttpMethod: OPTIONS
-      AuthorizationType: NONE
-      ApiKeyRequired: false
-      Integration:
-        Type: MOCK
-        RequestTemplates:
-          application/json: '{"statusCode": 200}'
-        IntegrationResponses:
-          - StatusCode: '200'
-            ResponseParameters:
-              method.response.header.Access-Control-Allow-Origin: !Sub "'${CorsAllowOrigin}'"
-              method.response.header.Access-Control-Allow-Methods: "'GET,OPTIONS'"
-              method.response.header.Access-Control-Allow-Headers: "'Content-Type,x-api-key'"
-              method.response.header.Access-Control-Max-Age: "'600'"
-      MethodResponses:
-        - StatusCode: '200'
-          ResponseParameters:
-            method.response.header.Access-Control-Allow-Origin: false
-            method.response.header.Access-Control-Allow-Methods: false
-            method.response.header.Access-Control-Allow-Headers: false
-            method.response.header.Access-Control-Max-Age: false
-
-  # Errors API Gateway raises itself (403 missing key, 429 throttled, 5xx
-  # integration failures) never reach a Lambda, so they would lack the CORS
-  # header and a browser would report "CORS error" instead of the real
-  # status. These add it to every such response.
-  Cors4xxGatewayResponse:
-    Type: AWS::ApiGateway::GatewayResponse
-    Properties:
-      RestApiId: !Ref FeedingApi
-      ResponseType: DEFAULT_4XX
-      ResponseParameters:
-        gatewayresponse.header.Access-Control-Allow-Origin: !Sub "'${CorsAllowOrigin}'"
-
-  Cors5xxGatewayResponse:
-    Type: AWS::ApiGateway::GatewayResponse
-    Properties:
-      RestApiId: !Ref FeedingApi
-      ResponseType: DEFAULT_5XX
-      ResponseParameters:
-        gatewayresponse.header.Access-Control-Allow-Origin: !Sub "'${CorsAllowOrigin}'"
-
   # Deployments are immutable snapshots. To publish API changes, rename this
   # logical ID and update the stage's DeploymentId to match. DependsOn lists
   # everything the snapshot must include.
+  #
+  # Removing API resources takes two deploys. CloudFormation deletes removed
+  # resources last (cleanup phase), after any new deployment has been taken,
+  # so a rename in the same update would snapshot them again. Remove them
+  # first, then rename this in a second change.
   FeedingApiDeployment20260929:
     Type: AWS::ApiGateway::Deployment
     DependsOn:
       - FeedingLogsPostMethod
       - FeedingLogsGetMethod
-      - FeedingLogsOptionsMethod
-      - Cors4xxGatewayResponse
-      - Cors5xxGatewayResponse
     Properties:
       RestApiId: !Ref FeedingApi
       Description: Adds GET /feedingLogs for the dashboard, with CORS
