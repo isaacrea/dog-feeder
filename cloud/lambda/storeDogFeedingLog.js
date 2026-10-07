@@ -9,8 +9,18 @@ const { DynamoDBDocumentClient, PutCommand } = require('@aws-sdk/lib-dynamodb');
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TABLE = process.env.TABLE_NAME;
+const DEVICE_KEY_ID = process.env.DEVICE_API_KEY_ID;
 
 exports.handler = async (event) => {
+  // API keys aren't method-scoped: API Gateway accepts any key on the stage
+  // here, the dashboard's included. Only the device's key may write. Compare
+  // the key's ID; never log identity.apiKey, which is the key itself.
+  const keyId = event?.requestContext?.identity?.apiKeyId;
+  if (!DEVICE_KEY_ID || keyId !== DEVICE_KEY_ID) {
+    console.warn('Rejected write from API key ID:', keyId ?? 'none');
+    return resp(403, { message: 'This API key cannot record feedings.' });
+  }
+
   try {
     const body = typeof event.body === 'string' ? JSON.parse(event.body) : event.body;
 
@@ -34,7 +44,7 @@ exports.handler = async (event) => {
       timestamp,                                     // authoritative: server-anchored when possible
       deviceTimestamp: body.timestamp,               // what the device's clock claimed (audit)
       timeSource:      ageSec != null ? 'server-anchored' : 'device',
-      meal:            body.meal ?? null,            // "breakfast" | "dinner" | "extra"
+      meal:            body.meal ?? null,            // "breakfast" | "dinner" | "unknown"
       override:        body.override ?? false,
       timeConfidence:  body.timeConfidence ?? null,  // "synced" | "drifting" | "unknown"
       batteryVoltage:  body.batteryVoltage ?? null,

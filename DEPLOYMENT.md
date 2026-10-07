@@ -12,7 +12,7 @@ A serverless ingest, notify, and read backend for dog feeding records:
 ```
 HTTPS POST (device or curl)
   -> API Gateway  (REST, API key required, rate limited)
-  -> Lambda       (validates payload, writes one record)
+  -> Lambda       (device key only; validates payload, writes one record)
   -> DynamoDB     (feeding log table)
   -> DynamoDB Streams
   -> Lambda       (formats a message per new record)
@@ -20,7 +20,7 @@ HTTPS POST (device or curl)
 
 HTTPS GET (the dashboard's proxy, or curl)
   -> API Gateway  (same resource; its own dashboard key and usage plan)
-  -> Lambda       (read-only: scans the table, returns the last 7/30/90 days)
+  -> Lambda       (dashboard key only; read-only: scans the table, returns the last 7/30/90 days)
 ```
 
 Everything is defined in one template: `cloud/infra/luna-feeder.yaml`. It is
@@ -244,6 +244,7 @@ Suggested test matrix:
 | 6 | new `eventId`, `batteryVoltage: 3.55` | `200`; email includes a battery-low line and subject tag `[battery low]` |
 | 7 | new `eventId`, `batteryVoltage: 3.40` | `200`; email tagged `[battery critical]` |
 | 8 | send `{}` as the body | `400` `Missing required fields...`: proves the route, key, and Lambda without writing a record or sending email (safe against a live stack) |
+| 9 | use the dashboard key as `x-api-key` | `403` `{"message":"This API key cannot record feedings."}`: API Gateway accepts any key on the stage, so the ingest Lambda checks it is the device's. Nothing is written |
 
 ### Read endpoint
 
@@ -265,6 +266,7 @@ Expected: `200` with JSON holding `days`, `from`, `count`, `latest`, and
 | R3 | `?days=14` | `400` `{"message":"days must be one of 7, 30, 90."}` |
 | R4 | no `x-api-key` header | `403` `{"message":"Forbidden"}`, with an `access-control-allow-origin` header (so browsers show the real status) |
 | R5 | `curl -i -X OPTIONS "$URL" -H "Origin: http://localhost:5173" -H "Access-Control-Request-Method: GET"` | `200` with `access-control-allow-methods: GET,OPTIONS` (the CORS preflight, answered by API Gateway alone) |
+| R6 | the device key as `x-api-key` | `403` `{"message":"This API key cannot read feedings."}`: the read Lambda accepts only the dashboard key |
 
 ## 9. Verify end to end
 
@@ -320,6 +322,8 @@ Expected: `200` with JSON holding `days`, `from`, `count`, `latest`, and
 | Stack `CREATE_FAILED`, "... already exists" | A copy of this stack (or leftovers from a prior attempt) exists in this region | Delete the old stack/resources, or use a different region. One deployment per region |
 | Stack `ROLLBACK_COMPLETE` | Any create failure; the stack rolled back | Read Events bottom-up, find the first `CREATE_FAILED`, read its full Status reason. A `ROLLBACK_COMPLETE` stack cannot be updated — delete it and create again |
 | `403 {"message":"Forbidden"}`, or the dashboard banner "API Gateway rejected the proxy's key" | Missing or wrong `x-api-key` header (for the dashboard, the proxy's `FEEDER_API_KEY`) | Re-check section 7: the key's **value**, not its ID; the header name exactly `x-api-key`. Restart the proxy after editing its key |
+| `403 {"message":"This API key cannot record feedings."}` on a POST | A valid key that isn't the device's (usually the dashboard key) | Use the device key. The ingest log group logs `Rejected write from API key ID: <id>`; compare it with the `ApiKeyId` output. If the device's own uploads get this, `DEVICE_API_KEY_ID` doesn't match: the device keeps unsent records and retries, so fix and redeploy |
+| `403 {"message":"This API key cannot read feedings."}`, or the dashboard banner "not the dashboard's" | A valid key that isn't the dashboard's (usually the device key in `FEEDER_API_KEY`) | Use the dashboard key. The read log group logs `rejectedApiKeyId`; compare it with the `DashboardApiKeyId` output |
 | `403 {"message":"Missing Authentication Token"}` | Wrong URL (path or stage typo) or an unsupported method | Use the `InvokeUrl` output verbatim: POST for the device, GET with `?days=` for the dashboard |
 | `429 Too Many Requests` | Throttle or daily quota exceeded | Wait (throttle) or until the next day / raise `QuotaLimit` (quota) |
 | `400 Missing required fields` | Body lacks `person` or `timestamp`, or malformed JSON header | Compare against the baseline request |

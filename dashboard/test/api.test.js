@@ -63,6 +63,15 @@ test('403 from API Gateway: says the proxy\'s key was rejected', async (t) => {
   });
 });
 
+test('403 from the read Lambda: says the key is valid but not the dashboard\'s', async (t) => {
+  respond(t, JSON.stringify({ message: 'This API key cannot read feedings.' }), 403);
+  await assert.rejects(get(), (e) => {
+    assert.match(e.message, /not the dashboard's/);
+    assert.match(e.hint, /not the device key's/);
+    return true;
+  });
+});
+
 test('403 Missing Authentication Token: points at FEEDER_API_URL', async (t) => {
   respond(t, JSON.stringify({ message: 'Missing Authentication Token' }), 403);
   await assert.rejects(get(), (e) => {

@@ -25,6 +25,10 @@ function describe(status, body) {
     return ['API Gateway says this URL does not exist (403 Missing Authentication Token).',
       `The proxy's FEEDER_API_URL must be the stack's InvokeUrl output exactly, ending in /feedingLogs (${PROXY_SETTINGS}).`];
   }
+  if (status === 403 && /cannot read feedings/i.test(msg)) {
+    return ['The read API refused the proxy\'s key: it is a valid key, but not the dashboard\'s (403).',
+      `FEEDER_API_KEY must be the dashboard key's value, not the device key's (${PROXY_SETTINGS}). Restart the proxy after editing it.`];
+  }
   if (status === 403) {
     return ['API Gateway rejected the proxy\'s key (403 Forbidden).',
       `FEEDER_API_KEY must be the dashboard key's value (API Gateway -> API keys -> luna-feeder-dashboard-key-iac-2 -> Show), not its ID (${PROXY_SETTINGS}). Restart the proxy after editing it.`];
