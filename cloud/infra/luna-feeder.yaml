@@ -657,10 +657,16 @@ Resources:
   # API keys are not scoped to methods: any key in a usage plan on this stage
   # can call every key-required method, so this key can also POST. The key
   # identifies and throttles the dashboard; it does not authorize it.
+  #
+  # Rotation: a key's value can't be changed, but Name is create-only, so
+  # changing it makes CloudFormation create a new key (new value), move the
+  # usage plan to it, and delete the old key once the update succeeds. Bump
+  # the suffix to rotate. -2: the first key was served to browsers before the
+  # dashboard moved behind a same-origin proxy.
   DashboardApiKey:
     Type: AWS::ApiGateway::ApiKey
     Properties:
-      Name: luna-feeder-dashboard-key-iac
+      Name: luna-feeder-dashboard-key-iac-2
       Description: Read key for the Luna Feeder dashboard
       Enabled: true
 
@@ -909,7 +915,7 @@ Outputs:
   DashboardApiKeyId:
     Description: >-
       Dashboard API key ID, not the key value. Retrieve the value at
-      API Gateway -> API keys -> luna-feeder-dashboard-key-iac -> Show.
+      API Gateway -> API keys -> luna-feeder-dashboard-key-iac-2 -> Show.
     Value: !Ref DashboardApiKey
 
   RestApiId:

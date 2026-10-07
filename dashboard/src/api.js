@@ -27,7 +27,7 @@ function describe(status, body) {
   }
   if (status === 403) {
     return ['API Gateway rejected the proxy\'s key (403 Forbidden).',
-      `FEEDER_API_KEY must be the dashboard key's value (API Gateway -> API keys -> luna-feeder-dashboard-key-iac -> Show), not its ID (${PROXY_SETTINGS}). Restart the proxy after editing it.`];
+      `FEEDER_API_KEY must be the dashboard key's value (API Gateway -> API keys -> luna-feeder-dashboard-key-iac-2 -> Show), not its ID (${PROXY_SETTINGS}). Restart the proxy after editing it.`];
   }
   if (status === 429) {
     return ['Too many requests (429).',
